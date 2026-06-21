@@ -115,6 +115,7 @@ import { useCwdActions } from './session/hooks/use-cwd-actions'
 import { useHermesConfig } from './session/hooks/use-hermes-config'
 import { useMessageStream } from './session/hooks/use-message-stream'
 import { useModelControls } from './session/hooks/use-model-controls'
+import { useModelProfileSync } from './session/hooks/use-model-profile-sync'
 import { usePreviewRouting } from './session/hooks/use-preview-routing'
 import { usePromptActions } from './session/hooks/use-prompt-actions'
 import { useRouteResume } from './session/hooks/use-route-resume'
@@ -859,6 +860,15 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  // Background poll that re-seeds the composer if the active profile's
+  // model.default changes externally (Dashboard Models page, `hermes model`,
+  // `hermes config set`, another client on the same profile). A user pick
+  // is sacred — the hook compares the server's value to the server's
+  // last-seen value, not the composer's, so a divergent pick is left alone.
+  // See use-model-profile-sync.ts for the full invariant + the
+  // in-flight-session guard. See issue #50013.
+  useModelProfileSync({ gatewayOpen: gatewayState === 'open' })
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the
