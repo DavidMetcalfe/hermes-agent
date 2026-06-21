@@ -856,3 +856,32 @@ def test_tool_filters_keeps_explicit_empty_include():
     assert _tool_filters({"tools": {"include": "bad", "exclude": ["x"]}}) == (None, ["x"])
     assert _tool_filters({}) == (None, None)
 
+
+# ---------------------------------------------------------------------------
+# stdio spawn resolution diagnostics (#50395)
+# ---------------------------------------------------------------------------
+
+class TestDescribeStdioSpawn:
+    """`hermes mcp test` surfaces the resolved binary + PATH the gateway spawn
+    would use, so a green test cannot silently mask a gateway-only
+    "exec: <cmd>: not found".
+    """
+
+    def test_absolute_command_resolves(self):
+        import os, sys
+        from hermes_cli.mcp_config import _describe_stdio_spawn
+        raw, resolved, path = _describe_stdio_spawn(
+            {"command": sys.executable, "env": {"PATH": os.path.dirname(sys.executable)}}
+        )
+        assert raw == sys.executable
+        assert resolved == sys.executable
+        assert path
+
+    def test_missing_command_is_unresolved(self):
+        from hermes_cli.mcp_config import _describe_stdio_spawn
+        raw, resolved, path = _describe_stdio_spawn(
+            {"command": "definitely_no_such_bin_xyz", "env": {"PATH": "/nonexistent_dir_zzz"}}
+        )
+        assert raw == "definitely_no_such_bin_xyz"
+        assert resolved is None
+        assert path == "/nonexistent_dir_zzz"
