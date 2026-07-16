@@ -7,6 +7,7 @@ import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
   $currentModel,
+  $currentModelExplicitlySet,
   $currentProvider,
   setCurrentModel,
   setCurrentProvider
@@ -52,6 +53,10 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         return
       }
 
+      if (force) {
+        $currentModelExplicitlySet.set(false)
+      }
+
       if (!force && $currentModel.get()) {
         return
       }
@@ -90,6 +95,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
+      $currentModelExplicitlySet.set(true)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

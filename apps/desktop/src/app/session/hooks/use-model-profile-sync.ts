@@ -4,6 +4,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import {
   $activeSessionId,
   $currentModel,
+  $currentModelExplicitlySet,
   $currentProvider,
   setCurrentModel,
   setCurrentProvider
@@ -39,12 +40,13 @@ interface UseModelProfileSyncOptions {
  *    and writes nothing to the composer — first-run seed is
  *    `refreshCurrentModel`'s job.
  *  - On subsequent calls, if the server value matches the previous baseline
+ *    OR the user explicitly picked via the picker (`$currentModelExplicitlySet`)
  *    OR the composer diverges from the previous baseline, returns the new
- *    server value as the baseline without writing. The user pick (divergent
- *    composer) is sacred.
+ *    server value as the baseline without writing. The user pick (explicit or
+ *    divergent composer) is sacred.
  *  - Otherwise (server drifted AND composer was still showing the previous
- *    baseline), writes the new value to the composer AND returns it as the
- *    new baseline.
+ *    baseline AND the user didn't explicitly pick), writes the new value to
+ *    the composer AND returns it as the new baseline.
  */
 export async function syncProfileDefaultTick(
   lastSeenDefault: ProfileDefaultSnapshot
@@ -74,7 +76,14 @@ export async function syncProfileDefaultTick(
     return lastSeenDefault
   }
 
-  // Server drifted. Did the composer follow the previous baseline?
+  // Server drifted. Skip if the user explicitly picked — a picker selection
+  // equal to the previous default is still an explicit pick (selectModel
+  // persists it), and we must not overwrite it on the next external change.
+  if ($currentModelExplicitlySet.get()) {
+    return { model: serverModel, provider: serverProvider }
+  }
+
+  // Did the composer follow the previous baseline?
   const composerModel = $currentModel.get()
   const composerProvider = $currentProvider.get()
 
@@ -84,10 +93,10 @@ export async function syncProfileDefaultTick(
   // Only re-seed when the composer is still showing the old default.
   if (composerFollowedBaseline && serverModel) {
     setCurrentModel(serverModel)
-
-    if (serverProvider) {
-      setCurrentProvider(serverProvider)
-    }
+    // Always write provider — even empty — to match refreshCurrentModel's seed
+    // behaviour (use-model-controls.ts:69). An empty provider is the server's
+    // answer; leaving a stale provider produces a model/provider mismatch.
+    setCurrentProvider(serverProvider)
   }
 
   return { model: serverModel, provider: serverProvider }

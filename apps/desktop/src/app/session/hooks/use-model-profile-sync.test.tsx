@@ -5,6 +5,7 @@ import { getGlobalModelInfo } from '@/hermes'
 import {
   $activeSessionId,
   $currentModel,
+  $currentModelExplicitlySet,
   $currentProvider,
   setCurrentModel,
   setCurrentProvider
@@ -19,6 +20,7 @@ vi.mock('@/hermes', () => ({
 describe('syncProfileDefaultTick', () => {
   beforeEach(() => {
     $activeSessionId.set(null)
+    $currentModelExplicitlySet.set(false)
     setCurrentModel('')
     setCurrentProvider('')
   })
@@ -27,6 +29,7 @@ describe('syncProfileDefaultTick', () => {
     cleanup()
     vi.restoreAllMocks()
     $activeSessionId.set(null)
+    $currentModelExplicitlySet.set(false)
     setCurrentModel('')
     setCurrentProvider('')
   })
@@ -144,6 +147,52 @@ describe('syncProfileDefaultTick', () => {
     // Composer untouched — empty server value is treated as "nothing to seed".
     expect($currentModel.get()).toBe('openai/gpt-5.5')
     expect($currentProvider.get()).toBe('openai-codex')
+  })
+
+  it('does not overwrite a picker selection equal to the previous default', async () => {
+    // Simulate the edge case from the maintainer review: user explicitly picked
+    // the same model as the current default (e.g. opened the picker, selected
+    // the default entry). selectModel calls setCurrentModel + sets the flag.
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+    $currentModelExplicitlySet.set(true)
+
+    // External change (Dashboard, `hermes model`, another client on the same profile).
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'anthropic/claude-sonnet-4.7',
+      provider: 'anthropic'
+    })
+
+    const next = await syncProfileDefaultTick({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    // The picker selection survives — provenance overrides the value comparison.
+    expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
+    // Baseline advances so a future tick (after the user clears the pick, or the
+    // profile is swapped) compares against the current server value.
+    expect(next).toEqual({ model: 'anthropic/claude-sonnet-4.7', provider: 'anthropic' })
+  })
+
+  it('writes an empty provider from the server when the model is non-empty', async () => {
+    // Composer following the previous baseline (provider populated).
+    setCurrentModel('openai/gpt-5.5')
+    setCurrentProvider('openai-codex')
+
+    // Server drifts — new model with an empty provider (e.g. a model that
+    // doesn't need an explicit provider override).
+    vi.mocked(getGlobalModelInfo).mockResolvedValue({
+      model: 'anthropic/claude-sonnet-4.7',
+      provider: ''
+    })
+
+    const next = await syncProfileDefaultTick({ model: 'openai/gpt-5.5', provider: 'openai-codex' })
+
+    // Both model AND provider are written — matches refreshCurrentModel's
+    // unconditional write (use-model-controls.ts:69). The empty provider is
+    // the server's answer; leaving the stale provider produces a mismatch.
+    expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.7')
+    expect($currentProvider.get()).toBe('')
+    expect(next).toEqual({ model: 'anthropic/claude-sonnet-4.7', provider: '' })
   })
 })
 
