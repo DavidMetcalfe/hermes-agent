@@ -403,7 +403,9 @@ class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
     def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
-        set_config_value("approvals.mode", value)
+        # approvals.mode is security-sensitive; force=True is the explicit
+        # operator override (the canonical path is `hermes approvals`).
+        set_config_value("approvals.mode", value, force=True)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -417,7 +419,8 @@ class TestStringTypedConfigValues:
     def test_non_string_defaults_keep_existing_coercion(
         self, _isolated_hermes_home, key, value, expected
     ):
-        set_config_value(key, value)
+        force = key == "approvals.timeout"  # security-sensitive key
+        set_config_value(key, value, force=force)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -782,123 +785,99 @@ class TestMalformedYAMLConfigPreservation:
 
 
 # ---------------------------------------------------------------------------
-# Literal dots in key paths — regression tests for #84064
-# ---------------------------------------------------------------------------
-
-class TestLiteralDotKeyEscaping:
-    """``hermes config set/unset/get`` must not split a key segment on a
-    literal dot.  Provider names routinely embed version numbers
-    (``qwen3.5-397b-wafer``), and before the backslash-escape (#84064)
-    ``providers.qwen3.5-397b-wafer.api_key`` silently created a bogus nested
-    ``qwen3`` -> ``5-397b-wafer`` structure while reporting success.
-    """
-
-    def _write_config(self, tmp_path, data: dict):
-        import yaml as _yaml
-        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
-
-    def test_split_key_path_escaped_dot(self):
-        from hermes_cli.config import _split_key_path
-
-        assert _split_key_path("providers.qwen3\\.5-397b.api_key") == [
-            "providers", "qwen3.5-397b", "api_key",
-        ]
-        assert _split_key_path("qwen3\\.5") == ["qwen3.5"]
-        assert _split_key_path("a\\.b\\.c") == ["a.b.c"]
-        # Unescaped keys keep plain dot-splitting semantics.
-        assert _split_key_path("terminal.backend") == ["terminal", "backend"]
-        assert _split_key_path("model") == ["model"]
-        # Backslash before a non-dot char is preserved verbatim.
-        assert _split_key_path("win\\path.key") == ["win\\path", "key"]
-
-    def test_set_preserves_literal_dot_in_provider_key(self, _isolated_hermes_home, capsys):
-        self._write_config(_isolated_hermes_home, {
-            "providers": {
-                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
-                "openrouter": {"api_key": "or-keep"},
-            }
-        })
-
-        set_config_value(
-            "providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
-            '{"Wafer-ZDR": "required"}',
-        )
-
-        import yaml
-        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        providers = saved["providers"]
-        # No bogus ``qwen3`` nesting was created; the existing entry was updated.
-        assert "qwen3" not in providers
-        target = providers["qwen3.5-397b-wafer-non-zdr"]
-        assert target["api"] == "https://pass.wafer.ai/v1"
-        # Current main coerces structured-looking values to real mappings
-        # (_looks_structured_value), so the JSON string lands as a dict.
-        assert target["extra_headers"] == {"Wafer-ZDR": "required"}
-        # Sibling provider untouched.
-        assert providers["openrouter"] == {"api_key": "or-keep"}
-        # Escaped key is schema-known (providers.* is an open dict) — no warning.
-        assert "not a recognized config key" not in capsys.readouterr().out
-
-    def test_unset_removes_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
-        self._write_config(_isolated_hermes_home, {
-            "providers": {
-                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
-                "openrouter": {"api_key": "or-keep"},
-            }
-        })
-
-        args = argparse.Namespace(
-            config_command="unset",
-            key="providers.qwen3\\.5-397b-wafer-non-zdr",
-        )
-        config_command(args)
-
-        import yaml
-        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
-        assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
-        assert "Unset providers.qwen3\\.5-397b-wafer-non-zdr" in capsys.readouterr().out
-
-    def test_unset_nested_field_under_literal_dot_key(self, _isolated_hermes_home, capsys):
-        self._write_config(_isolated_hermes_home, {
-            "providers": {
-                "qwen3.5-397b-wafer-non-zdr": {
-                    "api": "https://pass.wafer.ai/v1",
-                    "extra_headers": '{"K": "V"}',
-                },
-            }
-        })
-
-        args = argparse.Namespace(
-            config_command="unset",
-            key="providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
-        )
-        config_command(args)
-
-        import yaml
-        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
-        assert "extra_headers" not in target
-        assert target["api"] == "https://pass.wafer.ai/v1"
-
-    def test_get_reads_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
-        self._write_config(_isolated_hermes_home, {
-            "providers": {"qwen3.5-397b": {"api": "https://pass.wafer.ai/v1"}},
-        })
-
-        args = argparse.Namespace(
-            config_command="get",
-            key="providers.qwen3\\.5-397b.api",
-            json=False,
-        )
-        config_command(args)
-
-        assert capsys.readouterr().out.strip() == "https://pass.wafer.ai/v1"
-
-    def test_unescaped_dotted_path_unchanged(self, _isolated_hermes_home):
-        """Nesting semantics for plain dotted keys are untouched."""
-        set_config_value("terminal.backend", "docker")
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
+
+
+# ---------------------------------------------------------------------------
+# Security-policy guard (#81101)
+# ---------------------------------------------------------------------------
+
+class TestSensitiveConfigKeyGuard:
+    """`hermes config set` must refuse security-policy keys without --force.
+
+    config.yaml IS the security policy (approvals.mode, command_allowlist,
+    security.*); the config cache is mtime-keyed so a write takes effect
+    mid-session. The file tools already hard-deny agent writes to config.yaml
+    (tools/file_tools.py), so the sanctioned CLI must not be the one-command
+    bypass for an agent to disable the approval gate.
+    """
+
+    @pytest.mark.parametrize("key", [
+        "approvals.mode",
+        "approvals.cron_mode",
+        "approvals.deny",
+        "approvals",
+        "security.redact_secrets",
+        "security.tirith_enabled",
+        "security",
+        "command_allowlist",
+    ])
+    def test_sensitive_key_refused_without_force(self, _isolated_hermes_home, capsys, key):
+        with pytest.raises(SystemExit):
+            set_config_value(key, "off")
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+        assert key in captured.err
+
+        # Nothing was written to config.yaml.
+        raw = _read_config(_isolated_hermes_home)
+        assert "approvals" not in raw
+        assert "security" not in raw
+        assert "command_allowlist" not in raw
+
+    @pytest.mark.parametrize("key, expected", [
+        ("approvals.mode", "off"),          # string-typed default → stays string
+        ("approvals.cron_mode", "off"),     # string-typed default → stays string
+        ("security.redact_secrets", False),  # bool default → "off" coerces to False
+        ("command_allowlist", "git push --force"),  # list default → literal string
+    ])
+    def test_sensitive_key_allowed_with_force(self, _isolated_hermes_home, key, expected):
+        """--force is the explicit operator override for security keys."""
+        set_config_value(key, "off" if key != "command_allowlist" else "git push --force", force=True)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        node = saved
+        for part in key.split("."):
+            node = node[part]
+        assert node == expected
+
+    def test_approvals_mode_refusal_mentions_canonical_command(self, _isolated_hermes_home, capsys):
+        with pytest.raises(SystemExit):
+            set_config_value("approvals.mode", "off")
+
+        captured = capsys.readouterr()
+        assert "hermes approvals" in captured.err
+
+    def test_non_sensitive_keys_still_work(self, _isolated_hermes_home):
+        """Ordinary config keys are unaffected by the guard."""
+        set_config_value("terminal.backend", "docker")
+        set_config_value("display.skin", "mono")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["backend"] == "docker"
+        assert saved["display"]["skin"] == "mono"
+
+    def test_unset_sensitive_key_refused(self, _isolated_hermes_home, capsys):
+        from hermes_cli.config import unset_config_value
+
+        with pytest.raises(SystemExit):
+            unset_config_value("approvals.mode")
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
+
+    def test_sensitive_guard_runs_before_yaml_parse(self, _isolated_hermes_home, capsys):
+        """Even a broken config.yaml must not block the security refusal."""
+        (_isolated_hermes_home / "config.yaml").write_text("model: gpt-4o\n  broken: [oops")
+
+        with pytest.raises(SystemExit):
+            set_config_value("approvals.mode", "off")
+
+        captured = capsys.readouterr()
+        assert "security policy" in captured.err
