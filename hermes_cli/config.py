@@ -982,8 +982,13 @@ def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
         )
     else:
         print(
-            "  Use `hermes config set --force <key> <value>` to override, or "
-            "edit ~/.hermes/config.yaml directly.",
+            "  Security-policy keys cannot be changed via `hermes config set` "
+            "(with or without --force).",
+            file=sys.stderr,
+        )
+        print(
+            "  Edit config.yaml directly, or use the dedicated command where "
+            "one exists (e.g. `hermes approvals` for approvals.mode).",
             file=sys.stderr,
         )
     sys.exit(1)
@@ -3506,10 +3511,12 @@ def set_config_value(key: str, value: str, force: bool = False):
             "(leading, trailing, or doubled '.').")
     _exit_if_key_managed(key, "set")
     # Security-policy guard (#81101): approvals.*, security.* and
-    # command_allowlist change the effective security policy mid-session. Only
-    # an explicit --force (an operator typing the override at the CLI) may
-    # mutate them — the canonical operator paths (e.g. `hermes approvals`) pass
-    # force=True.
+    # command_allowlist change the effective security policy mid-session.
+    # force=True is honored ONLY by the in-process user-mediated canonical
+    # path (`hermes approvals` / /approvals → approval_mode.py); the CLI
+    # never forwards --force for sensitive keys (config_command refuses them
+    # at every form), so no agent-reachable invocation can weaken the policy
+    # without an operator in the loop. See review on #81108.
     if _is_sensitive_config_key(key) and not force:
         _refuse_sensitive_config_key(key, hint="set")
     if _is_env_config_key(key):
@@ -3808,14 +3815,6 @@ _CONFIG_USAGE = """Available commands:
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
-    handler = _CONFIG_SUBCOMMANDS.get(subcmd)
-    if handler is not None:
-        handler(args)
-        return
-    print(f"Unknown config command: {subcmd}")
-    print()
-    print(_CONFIG_USAGE)
-    sys.exit(1)
 
 
 # ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
