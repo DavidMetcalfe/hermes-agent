@@ -35,6 +35,8 @@ from hermes_cli.gateway import (
     _stable_service_working_dir,
 )
 from hermes_cli.main_dashboard import _dashboard_probe_host
+from xml.sax.saxutils import escape
+
 from hermes_constants import get_hermes_home
 
 
@@ -81,8 +83,8 @@ def _degrade_dashboard_launchctl_error(exc: subprocess.CalledProcessError, what:
             if args:
                 cmd_hint = " ".join(f'"{a}"' for a in args)
                 print(f"  Manual workaround: nohup {cmd_hint} > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
-        except Exception:
-            pass
+        except Exception as exc:
+            print(f"Could not read installed plist for manual workaround: {exc}")
     else:
         print(f"  Manual workaround: nohup python -m hermes_cli.main dashboard --host <host> --port <port> > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
     sys.exit(1)
@@ -129,7 +131,7 @@ def generate_dashboard_launchd_plist(
     ]
 
     prog_args_xml = "\n        ".join(
-        f"<string>{part}</string>" for part in args
+        f"<string>{escape(str(part))}</string>" for part in args
     )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -137,7 +139,7 @@ def generate_dashboard_launchd_plist(
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>{label}</string>
+    <string>{escape(label)}</string>
 
     <key>ProgramArguments</key>
     <array>
@@ -145,16 +147,16 @@ def generate_dashboard_launchd_plist(
     </array>
 
     <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
+    <string>{escape(working_dir)}</string>
 
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
-        <string>{sane_path}</string>
+        <string>{escape(sane_path)}</string>
         <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
+        <string>{escape(venv_dir)}</string>
         <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
+        <string>{escape(hermes_home)}</string>
         <key>HERMES_SUPERVISED_CHILD</key>
         <string>1</string>
     </dict>
@@ -174,10 +176,10 @@ def generate_dashboard_launchd_plist(
     <integer>25</integer>
 
     <key>StandardOutPath</key>
-    <string>{log_dir}/dashboard.log</string>
+    <string>{escape(str(log_dir))}/dashboard.log</string>
 
     <key>StandardErrorPath</key>
-    <string>{log_dir}/dashboard.error.log</string>
+    <string>{escape(str(log_dir))}/dashboard.error.log</string>
 </dict>
 </plist>
 """
@@ -281,7 +283,7 @@ def dashboard_service_stop() -> None:
     print("Dashboard service stopped.")
 
 
-def dashboard_service_restart(host: str, port: int, extra_args: list[str] | None = None) -> None:
+def dashboard_service_restart() -> None:
     if not is_macos():
         print("Dashboard launchd service is only supported on macOS; on Linux use a systemd unit.")
         sys.exit(1)
@@ -304,11 +306,17 @@ def dashboard_service_uninstall() -> None:
     domain = _launchd_domain()
     subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=30)
     if plist_path.exists():
-        # Only delete if the label matches our namespace (defensive).
-        plist_text = plist_path.read_text(encoding="utf-8")
-        if label in plist_text:
+        # Only delete if the parsed Label equals the current label (namespace guard).
+        try:
+            parsed_label = plistlib.loads(plist_path.read_bytes()).get("Label")
+        except Exception as exc:
+            print(f"Parse error reading {plist_path}: {exc}; skipping unlink.")
+            sys.exit(1)
+        if parsed_label == label:
             plist_path.unlink()
             print(f"Removed {plist_path}")
+        else:
+            print(f"Namespace guard: plist label '{parsed_label}' does not match '{label}'; skipping unlink.")
     print("Dashboard service uninstalled.")
 
 
@@ -329,8 +337,8 @@ def dashboard_service_status() -> None:
                 elif arg == "--port" and i + 1 < len(prog_args):
                     try:
                         port = int(prog_args[i + 1])
-                    except ValueError:
-                        pass
+                    except ValueError as exc:
+                        print(f"Could not parse port from plist argument '{prog_args[i + 1]}': {exc}")
         except Exception as exc:
             print(f"Could not read installed plist: {exc}")
     else:

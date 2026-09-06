@@ -215,7 +215,7 @@ class TestDashboardLifecycle:
 
     def test_uninstall_deletes_matching_plist(self, mock_dashboard_service, monkeypatch, tmp_path):
         plist_path = tmp_path / "test.plist"
-        plist_path.write_text("<string>ai.hermes.dashboard</string>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"Label": "ai.hermes.dashboard", "ProgramArguments": ["python"]}))
         monkeypatch.setattr(
             mock_dashboard_service, "get_dashboard_launchd_plist_path", lambda: plist_path
         )
@@ -224,7 +224,7 @@ class TestDashboardLifecycle:
 
     def test_uninstall_never_deletes_non_matching_plist(self, mock_dashboard_service, monkeypatch, tmp_path):
         plist_path = tmp_path / "other.plist"
-        plist_path.write_text("<string>ai.hermes.gateway</string>", encoding="utf-8")
+        plist_path.write_bytes(plistlib.dumps({"Label": "ai.hermes.gateway", "ProgramArguments": ["python"]}))
         monkeypatch.setattr(
             mock_dashboard_service, "get_dashboard_launchd_plist_path", lambda: plist_path
         )
@@ -361,7 +361,7 @@ class TestRegressionG1G2InstallMirror:
         out = capsys.readouterr().out
         assert "cannot manage" in out or "manual workaround" in out
         # Must NOT spawn a gateway (F1 note).
-        assert "gateway" not in out.lower() or "detached" not in out.lower()
+        assert "gateway" not in out.lower() and "detached" not in out.lower()
 
 
 class TestRegressionG3StatusReuseParser:
@@ -509,3 +509,25 @@ class TestRegressionF7RegressionTestsAdded:
         assert len(url_captured) == 1
         assert "127.0.0.1" in url_captured[0]
         assert "0.0.0.0" not in url_captured[0]
+
+
+class TestXMLInjectionRegression:
+    """Security regression: extra_args with XML metacharacters must round-trip transparently."""
+
+    def test_xml_metacharacters_in_extra_args_roundtrip(self, mock_dashboard_service):
+        import plistlib
+        malicious_extra = ["--foo", 'a<b>&c"d']
+        plist_text = mock_dashboard_service.generate_dashboard_launchd_plist(
+            "127.0.0.1", 9119, extra_args=malicious_extra
+        )
+        parsed = plistlib.loads(plist_text.encode("utf-8"))
+        prog_args = parsed.get("ProgramArguments", [])
+        # The malicious values must appear exactly in the parsed arguments (escape is transparent).
+        assert "--foo" in prog_args
+        assert 'a<b>&c"d' in prog_args
+        # Ensure the raw plist text actually contains escaped entities (not raw metacharacters).
+        raw_text = plist_text
+        assert "&lt;b&gt;" in raw_text or "a&lt;b" in raw_text
+        # Confirm the exact original is recoverable (escape is transparent on read-back).
+        assert "--foo" in prog_args
+        assert 'a<b>&c"d' in prog_args
