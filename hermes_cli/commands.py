@@ -13,6 +13,10 @@ from dataclasses import dataclass
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
+try:
+    from agent.i18n import SUPPORTED_LANGUAGES
+except Exception:
+    SUPPORTED_LANGUAGES = ()
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +200,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("indicator", "Pick the TUI busy-indicator style", "Configuration",
                cli_only=True, args_hint=f"[{'|'.join(INDICATOR_STYLES)}]",
                subcommands=INDICATOR_STYLES, desktop="terminal"),
+    CommandDef("language", "Set the UI language for static messages", "Configuration",
+               cli_only=True, args_hint="[<code>|status]",
+               subcommands=SUPPORTED_LANGUAGES, desktop="terminal"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
                desktop="composer-voice"),

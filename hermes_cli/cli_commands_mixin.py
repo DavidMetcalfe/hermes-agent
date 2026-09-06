@@ -2675,6 +2675,25 @@ class CLICommandsMixin:
         _persist_display_choice("display.tui_status_indicator", arg, "Busy-indicator style",
                                 "The TUI picks up the new style on its next render.")
 
+    def _handle_language_command(self, cmd: str):
+        """Handle /language [<code>|status] — set or show the UI language for static messages."""
+        from agent.i18n import SUPPORTED_LANGUAGES, normalize_language, reset_language_cache
+        current = (self.config.get("display") or {}).get("language", "en")
+        arg = _command_arg(cmd, lower=True)
+        usage = _dim_line(f"Usage: /language [{'|'.join(SUPPORTED_LANGUAGES)}]")
+        if not arg or arg == "status":
+            return _cp(_accent_line(f"UI language: {current}"),
+                       _dim_line(f"Supported: {', '.join(SUPPORTED_LANGUAGES)}"), usage)
+        resolved = normalize_language(arg)
+        if resolved is None:
+            return _cp(_dim_line(f"(._.) Unknown language: {arg}"),
+                       _dim_line(f"Supported: {', '.join(SUPPORTED_LANGUAGES)}"),
+                       usage)
+        self.config.setdefault("display", {})["language"] = resolved
+        _persist_display_choice("display.language", resolved, "UI language",
+                                "Static UI messages (approval prompts, some gateway replies) switch immediately; agent replies follow the language you write in.")
+        reset_language_cache()
+
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode).
         Session-scoped by default; ``--global`` persists agent.service_tier to config.yaml
