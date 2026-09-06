@@ -72,7 +72,8 @@ def find_service_managed_dashboard_pids() -> dict[int, str]:
         return result
     for plist_path in launchd_dir.glob("ai.hermes.dashboard*.plist"):
         try:
-            plist_data = plistlib.load(plist_path.open("rb"))
+            with plist_path.open("rb") as fh:
+                plist_data = plistlib.load(fh)
         except Exception as exc:
             # One-line diagnostic, not silent; other plists still processed.
             print(f"[find_service_managed_dashboard_pids] skipped unparseable {plist_path}: {exc}")
