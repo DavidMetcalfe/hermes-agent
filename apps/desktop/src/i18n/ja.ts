@@ -1853,7 +1853,8 @@ export const ja = defineLocale({
       telegram: 'Telegram',
       discord: 'Discord',
       slack: 'Slack',
-      email: 'メール'
+      email: 'メール',
+      all: '接続中のすべてのチャンネル'
     },
     scheduleLabels: {
       daily: '毎日',
