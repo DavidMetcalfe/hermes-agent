@@ -67,3 +67,14 @@ def test_seam_fail_open_when_merged_hook_raises(clean_ca_env, monkeypatch):
 
     monkeypatch.setattr("agent.win_ca_bundle.windows_merged_ca_bundle", _boom)
     assert resolve_httpx_verify() is True
+
+
+def test_requests_seam_fail_open_when_merged_hook_raises(clean_ca_env, monkeypatch):
+    """Mirror of the ssl_verify fail-open contract for the requests-probe seam."""
+    from agent.model_metadata import _resolve_requests_verify
+
+    def _boom():
+        raise RuntimeError("simulated bundle failure")
+
+    monkeypatch.setattr("agent.win_ca_bundle.windows_merged_ca_bundle", _boom)
+    assert _resolve_requests_verify() is True

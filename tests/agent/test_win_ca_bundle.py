@@ -64,10 +64,11 @@ def test_cache_write_is_atomic_and_no_residue_on_validation_failure(monkeypatch,
     assert list(tmp_path.joinpath("cache").iterdir()) == []
 
 
-def test_cache_publish_survives_concurrent_memoized_readers(monkeypatch, tmp_path):
+def test_cache_publish_leaves_no_residue_and_republishes_atomically(monkeypatch, tmp_path):
     """The published path must exist and validate after a successful build; a second
-    build in a fresh 'process' (memo reset) republishes atomically without leaving
-    temp residue next to the final file."""
+    build after memo reset republishes without leaving temp residue next to the final
+    file. (Sequential stand-in for the cross-process race — the atomic os.replace
+    plus temp-only-on-failure unlink is what makes concurrent processes safe.)"""
     import agent.win_ca_bundle as m
 
     der = base64.b64decode(

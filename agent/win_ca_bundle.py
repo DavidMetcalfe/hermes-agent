@@ -170,6 +170,17 @@ def windows_merged_ca_bundle() -> str | None:
                     tmp_file.write(bundle_text)
                 try:
                     ctx = ssl.create_default_context(cafile=str(tmp_path))
+                    # Content check BEFORE publishing: a syntactically valid but
+                    # empty bundle must never reach the final path.
+                    try:
+                        loaded = ctx.get_ca_certs()
+                        if not loaded and not pem_blocks:
+                            logger.warning(
+                                "agent.win_ca_bundle: bundle validated but loaded 0 certificates — refusing to publish"
+                            )
+                            return None  # finally unlinks the private temp; final path untouched
+                    except NotImplementedError:
+                        pass  # truststore-backed; creation success is sufficient validation
                 except Exception as exc:
                     logger.warning(
                         "agent.win_ca_bundle: validation with ssl.create_default_context failed: %s", exc
@@ -186,18 +197,6 @@ def windows_merged_ca_bundle() -> str | None:
                         tmp_path.unlink(missing_ok=True)
                     except OSError:
                         pass
-
-            # Basic sanity: we must have loaded at least one cert. On Windows,
-            # get_ca_certs() may raise NotImplementedError for truststore-backed
-            # contexts; creation success is sufficient validation per spec.
-            try:
-                certs = ctx.get_ca_certs()
-                if not certs and not pem_blocks:
-                    # If store yielded nothing AND no certifi loaded anything,
-                    # treat as unusable — but certifi should always provide some.
-                    pass
-            except NotImplementedError:
-                pass  # truststore-backed; validation succeeded.
 
             # Cache memo. Log honestly: a certifi-only bundle (store enum failed or
             # yielded nothing) is NOT the merged bundle the caller asked for — warn
