@@ -367,3 +367,39 @@ def _is_human_actor_context() -> bool:
         except Exception:
             pass
     return False
+
+
+def _get_trusted_execute_code_profiles() -> list[str]:
+    """Read ``approvals.trusted_execute_code_profiles``: an explicit allowlist of
+    profile names trusted for whole-script execute_code auto-approval.
+
+    Returns a list (never a non-list); a malformed value is treated as empty (safe).
+    Reuses ``_get_approval_config()`` (same module) instead of re-loading the config.
+    """
+    try:
+        raw = _get_approval_config().get("trusted_execute_code_profiles", []) or []
+        if not isinstance(raw, (list, tuple, set)):
+            return []
+        return [str(item).strip() for item in raw if item is not None and str(item).strip()]
+    except Exception:
+        return []
+
+
+def _execute_code_profile_is_trusted() -> bool:
+    """True when the ACTIVE Hermes profile is explicitly trusted for whole-script
+    execute_code auto-approval. Profile-scoped via ``get_active_profile_name``
+    (inferred from HERMES_HOME); the config block is itself profile-specific, so
+    trust never leaks across profiles. Lazy-import avoids any import cycle with
+    hermes_cli.profiles (matching run_agent.py's pattern).
+
+    Fail-safe: any error resolving the profile (import failure, HERMES_HOME
+    resolution error, a raising ``get_active_profile_name``) yields ``False`` — an
+    unexpected failure must never accidentally grant trust."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = (get_active_profile_name() or "").strip().lower()
+    except Exception:
+        logger.debug("execute_code trust lane disabled: profile resolution failed", exc_info=True)
+        return False
+    trusted = [p.lower() for p in _get_trusted_execute_code_profiles()]
+    return bool(profile) and profile in trusted
