@@ -199,7 +199,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=INDICATOR_STYLES, desktop="terminal"),
     CommandDef("language", "Set the UI language for static messages", "Configuration",
                cli_only=True, args_hint="[<code>|status]",
-               subcommands=SUPPORTED_LANGUAGES, desktop="terminal"),
+               subcommands=(*SUPPORTED_LANGUAGES, "status"), desktop="terminal"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status"),
                desktop="composer-voice"),

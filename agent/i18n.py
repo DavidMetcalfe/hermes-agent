@@ -74,7 +74,7 @@ def normalize_language(value: str | None) -> str | None:
     """Map a user-supplied language value to a supported code, or None if unknown/empty."""
     if not value or not isinstance(value, str):
         return None
-    key = value.strip().lower()
+    key = value.strip().lower().replace("_", "-")
     if not key:
         return None
     if key in SUPPORTED_LANGUAGES:
@@ -87,7 +87,7 @@ def normalize_language(value: str | None) -> str | None:
 
 def _normalize_lang(value: Any) -> str:
     """Map a user-supplied value (code, alias, or regional tag like ``zh-CN``) to a supported code, else default."""
-    key = value.strip().lower() if isinstance(value, str) else ""
+    key = value.strip().lower().replace("_", "-") if isinstance(value, str) else ""
     if key in SUPPORTED_LANGUAGES:
         return key
     if key in _LANGUAGE_ALIASES:
