@@ -141,7 +141,9 @@ def update_pending(subsystem: str, pending_id: str, payload: Dict[str, Any],
         record["payload"] = payload
         if summary is not None:
             record["summary"] = summary.strip()
-        tmp = path.with_suffix(".json.tmp")
+        # Unique tmp name: concurrent edits of the same record must not share a
+        # tmp path (stage_write gets this for free from a fresh uuid4 id).
+        tmp = path.with_suffix(f".json.{os.getpid()}_{time.time_ns()}.tmp")
         tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, path)
         return record

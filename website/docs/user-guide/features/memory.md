@@ -276,7 +276,7 @@ Review staged writes from the CLI or any messaging platform:
 /memory review [id]         # show one staged write in full (oldest first without an id)
 /memory approve <id>        # apply one (or 'all')      aliases: a
 /memory reject <id>         # drop one (or 'all')       aliases: b  ·  'd' = reject all
-/memory edit <id> <text>    # correct the staged text before approving (add/replace only)
+/memory edit <id> <new text> # correct the staged text before approving (add/replace only)
 /memory approval on         # turn the gate on (or 'off') and persist it
 ```
 

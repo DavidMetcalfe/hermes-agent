@@ -358,6 +358,20 @@ def test_memory_pending_list_is_labeled(hermes_home):
     assert "/memory approve" in out
 
 
+def test_memory_reject_all_alias_with_id_does_not_wipe_queue(hermes_home):
+    # Cross-vendor review catch: '/memory d <id>' must not silently purge the
+    # whole queue when the user plausibly meant "drop <id>" — point at /memory b.
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec1 = _stage_memory_add("keep me one")
+    rec2 = _stage_memory_add("keep me two")
+    out = handle_pending_subcommand(wa.MEMORY, ["d", rec2["id"]])
+    assert out is not None
+    assert "rejects ALL" in out
+    assert f"/memory b {rec2['id']}" in out
+    assert wa.pending_count(wa.MEMORY) == 2  # nothing purged
+
+
 def test_memory_invalid_params_rejected_before_staging(hermes_home):
     # Param validation must run BEFORE the gate so a broken write is rejected
     # immediately instead of staged and failing at approve time.

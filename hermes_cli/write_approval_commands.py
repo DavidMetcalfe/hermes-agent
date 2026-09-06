@@ -41,8 +41,9 @@ def _fmt_memory_record(record) -> str:
                   f"  B) Reject this memory write     /memory reject {pending_id}    (or /memory b {pending_id})",
                   "  C) Show all pending memory writes  /memory pending              (or /memory c)",
                   "  D) Reject all pending memory writes  /memory reject all         (or /memory d)",
-                  "  E) Review one-by-one / edit      /memory review                (or /memory e)",
-                  f"     Edit before approving: /memory edit {pending_id} <new text>"])
+                  "  E) Review one-by-one / edit      /memory review                (or /memory e)"])
+    if action in {"add", "replace"}:
+        lines.append(f"     Edit before approving: /memory edit {pending_id} <new text>")
     return "\n".join(lines)
 
 
@@ -59,7 +60,7 @@ def _fmt_pending_list(subsystem: str) -> str:
             if action == "batch":
                 detail = f"batch ({len(payload.get('operations') or [])} op(s))"
             else:
-                detail = (payload.get("content") or payload.get("old_text") or r.get("summary", ""))
+                detail = str(payload.get("content") or payload.get("old_text") or r.get("summary") or "")
                 detail = detail.replace("\n", " ")
                 if len(detail) > 120:
                     detail = detail[:117] + "..."
@@ -108,6 +109,9 @@ def handle_pending_subcommand(
     if sub == "edit" and subsystem == wa.MEMORY:
         return _edit_memory(rest)
     if sub == "reject_all" and subsystem == wa.MEMORY:
+        if rest:
+            return (f"'/memory d' rejects ALL pending writes. "
+                    f"To reject a single write, use '/memory b {rest[0]}'.")
         return _reject(subsystem, ["all"])
     if sub in {"approve", "apply"}:
         return _approve(subsystem, rest, memory_store)
