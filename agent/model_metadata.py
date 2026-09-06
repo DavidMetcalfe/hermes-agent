@@ -49,7 +49,7 @@ def __getattr__(name: str):
 def _resolve_requests_verify(base_url: str = "") -> bool | str:
     """SSL ``verify`` for ``requests`` probes; mirrors ``agent.ssl_verify.resolve_httpx_verify``.
     Priority: per-provider ``ssl_verify: false`` -> per-provider ``ssl_ca_cert`` -> CA env vars
-    -> merged Windows CA bundle (#43294) -> certifi."""
+    -> merged Windows CA bundle (#43294) -> True (httpx/requests default verify)."""
     if base_url:
         try:
             from hermes_cli.config import get_custom_provider_tls_settings
