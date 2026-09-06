@@ -344,7 +344,6 @@ def _kill_stale_dashboard_processes(
         from hermes_cli.dashboard_service import find_service_managed_dashboard_pids
         managed_pids = find_service_managed_dashboard_pids()
     kickstarted_labels: set[str] = set()
-    failed_kickstarts: set[str] = set()
     if restart_managed:
         # An SSH-owned backend belongs to an attached Desktop client; killing it strands that
         # client's fixed SSH port-forward. Same ownership records as the reaper.
@@ -392,7 +391,6 @@ def _kill_stale_dashboard_processes(
                 print(f"✓ kickstarted {label} (PID {pid})")
                 kickstarted_labels.add(label)
             except subprocess.CalledProcessError as exc:
-                failed_kickstarts.add(label)
                 # Req 6 hint exactly: show command + explanation.
                 print(
                     f"✗ kickstart failed for {label} (PID {pid}); "
