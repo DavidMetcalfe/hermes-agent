@@ -30,6 +30,62 @@ def test_gate_non_win32(monkeypatch):
     assert m.windows_merged_ca_bundle() is None
 
 
+def _patch_win32(monkeypatch, entries):
+    """Force the win32 gate open, reset the memo, and stub store enumeration."""
+    import agent.win_ca_bundle as m
+    monkeypatch.setattr(m.sys, "platform", "win32")
+    monkeypatch.setattr(m, "_bundle_path", None)
+    monkeypatch.setattr(m.ssl, "enum_certificates", lambda store: entries, raising=False)
+    return m
+
+
+def test_cache_write_is_atomic_and_no_residue_on_validation_failure(monkeypatch, tmp_path):
+    """Regression (cross-vendor review, cross-process cache race): the final cache
+    path must only ever hold validated content, and a validation failure must leave
+    no temp residue and NO final-path file that another process already memoized."""
+    import agent.win_ca_bundle as m
+
+    der = base64.b64decode(
+        Path(certifi.where()).read_text().split("-----BEGIN CERTIFICATE-----")[1]
+        .split("-----END CERTIFICATE-----")[0]
+        .strip()
+    )
+    m = _patch_win32(monkeypatch, [(der, "x509_asn", True)])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    # Broken validation: create_default_context rejects the temp file -> return None,
+    # and NOTHING is left behind in the cache dir (no .pem, no .tmp residue).
+    def _boom(cafile):
+        raise ssl.SSLError("simulated validation failure")
+
+    monkeypatch.setattr(m.ssl, "create_default_context", _boom)
+    assert m.windows_merged_ca_bundle() is None
+    assert list(tmp_path.joinpath("cache").iterdir()) == []
+
+
+def test_cache_publish_survives_concurrent_memoized_readers(monkeypatch, tmp_path):
+    """The published path must exist and validate after a successful build; a second
+    build in a fresh 'process' (memo reset) republishes atomically without leaving
+    temp residue next to the final file."""
+    import agent.win_ca_bundle as m
+
+    der = base64.b64decode(
+        Path(certifi.where()).read_text().split("-----BEGIN CERTIFICATE-----")[1]
+        .split("-----END CERTIFICATE-----")[0]
+        .strip()
+    )
+    m = _patch_win32(monkeypatch, [(der, "x509_asn", True)])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    first = m.windows_merged_ca_bundle()
+    assert first is not None and Path(first).exists()
+    m._bundle_path = None  # simulate a fresh process
+    second = m.windows_merged_ca_bundle()
+    assert second == first
+    leftovers = [p for p in tmp_path.joinpath("cache").iterdir() if p.name != "windows-ca-bundle.pem"]
+    assert leftovers == []
+
+
 def test_pure_pem_helper_includes_serverauth_excludes_others():
     from agent.win_ca_bundle import _pem_from_store_entries
     # Read one real PEM block from certifi, decode to DER

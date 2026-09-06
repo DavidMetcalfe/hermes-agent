@@ -16,8 +16,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import os
 import ssl
 import sys
+import tempfile
 import threading
 from pathlib import Path
 
@@ -145,24 +147,37 @@ def windows_merged_ca_bundle() -> str | None:
                 logger.warning("agent.win_ca_bundle: cannot create cache dir: %s", exc)
                 return None
 
-            # 5. Write file.
+            # 5-6. Write + validate via a private temp file, then os.replace() into
+            # place. Concurrent Hermes processes share this cache path; a process's
+            # memoized path must never dangle, so validation failure may only unlink
+            # the TEMP file (never a final path another process may have loaded),
+            # and os.replace() makes the swap atomic on the final name.
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(cache_path.parent), prefix=".windows-ca-bundle-", suffix=".pem.tmp"
+            )
+            tmp_path = Path(tmp_name)
+            published = False
             try:
-                cache_path.write_text(bundle_text, encoding="utf-8")
-            except Exception as exc:
-                logger.warning("agent.win_ca_bundle: failed to write bundle: %s", exc)
-                return None
-
-            # 6. Validation: ssl.create_default_context(cafile=<path>) must succeed.
-            try:
-                ctx = ssl.create_default_context(cafile=str(cache_path))
-            except Exception as exc:
-                logger.warning("agent.win_ca_bundle: validation with ssl.create_default_context failed: %s", exc)
-                # Delete broken file and return None (fail-open).
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                    tmp_file.write(bundle_text)
                 try:
-                    cache_path.unlink(missing_ok=True)
-                except Exception:
-                    pass
+                    ctx = ssl.create_default_context(cafile=str(tmp_path))
+                except Exception as exc:
+                    logger.warning(
+                        "agent.win_ca_bundle: validation with ssl.create_default_context failed: %s", exc
+                    )
+                    return None  # finally unlinks the private temp; final path untouched
+                os.replace(tmp_name, cache_path)
+                published = True
+            except OSError as exc:
+                logger.warning("agent.win_ca_bundle: cannot publish bundle to %s: %s", cache_path, exc)
                 return None
+            finally:
+                if not published:
+                    try:
+                        tmp_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
 
             # Basic sanity: we must have loaded at least one cert. On Windows,
             # get_ca_certs() may raise NotImplementedError for truststore-backed
