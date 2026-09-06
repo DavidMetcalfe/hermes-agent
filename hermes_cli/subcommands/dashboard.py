@@ -132,7 +132,6 @@ def build_dashboard_parser(
         help="Manage the macOS dashboard LaunchAgent service",
         description="Install, start, stop, restart, check status, or uninstall the "
             "macOS LaunchAgent that supervises `hermes dashboard`.")
-    service_parser.set_defaults(func=cmd_dashboard_service)
     service_subparsers = service_parser.add_subparsers(
         dest="dashboard_service_command", required=True)
 

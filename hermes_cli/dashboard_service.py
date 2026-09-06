@@ -11,6 +11,7 @@ manual nohup hint (not a detached gateway spawn — `_spawn_detached_gateway()`
 spawns a GATEWAY, which is the wrong service for the dashboard).
 """
 
+import argparse
 import os
 import plistlib
 import subprocess
@@ -18,6 +19,7 @@ import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Callable
 
 from hermes_cli.gateway import (
     _launchctl_bootstrap,
@@ -424,7 +426,7 @@ def dashboard_service_status() -> None:
 # CLI dispatcher for `hermes dashboard service <verb>` (issue #44106)
 # ------------------------------------------------------------------
 
-_SERVICE_VERBS: dict[str, object] = {
+_SERVICE_VERBS: dict[str, Callable[[argparse.Namespace], None]] = {
     "install": lambda a: dashboard_service_install(
         a.host, a.port,
         extra_args=(["--skip-build"] if getattr(a, "skip_build", False) else None),
