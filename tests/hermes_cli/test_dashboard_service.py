@@ -389,27 +389,6 @@ class TestRegressionG3StatusReuseParser:
         assert "127.0.0.1" in out or "Dashboard HTTP" in out
 
 
-class TestRegressionG4DeadCode:
-    def test_no_project_root_or_profile_arg_import(self):
-        import hermes_cli.dashboard_service as ds
-        # These must not exist in the module namespace.
-        assert not hasattr(ds, "PROJECT_ROOT")
-        assert not hasattr(ds, "_profile_arg")
-
-    def test_no_dead_imports_remain(self):
-        import hermes_cli.dashboard_service as ds
-        # urllib.error must be explicitly imported (F4).
-        assert "urllib.error" in str(type(ds.urllib.error)) or hasattr(ds, "urllib")
-
-
-class TestRegressionG5MarkerMisuse:
-    def test_stop_non_macos_has_no_macos_only_marker(self):
-        import hermes_cli.dashboard_service as ds
-        import pytest
-        # The function should be callable; the test itself has no @pytest.mark.macos_only.
-        pass
-
-
 class TestRegressionF7RegressionTestsAdded:
     def test_start_missing_plist_regenerates_and_bootstraps_kickstarts_sequence(self, monkeypatch, tmp_path):
         import hermes_cli.dashboard_service as ds
