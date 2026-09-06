@@ -171,6 +171,8 @@ class TestKillStaleDashboardLaunchdIntegration:
         # After exclusion: pids removed, so matched should be empty (or just 999 removed).
         # Since we filter pids before kill, result matched should not include 999.
         assert 999 not in result.get("matched", [])
+        # When all pids excluded (all kickstarted), "Stopping" line must be absent (F4).
+        assert "⟲ Stopping" not in out
 
     def test_kickstart_failure_falls_through_to_kill_with_hint(self, monkeypatch, capsys):
         monkeypatch.setattr(
@@ -230,3 +232,39 @@ class TestKillStaleDashboardLaunchdIntegration:
         assert "managed by launchd job ai.hermes.dashboard-work" in out
         assert "hermes dashboard service stop" in out
         assert 888 in result.get("killed", [])
+
+    def test_kickstart_timeout_expired_falls_through_to_kill_with_hint(self, monkeypatch, capsys):
+        # TimeoutExpired should degrade to raw-kill fallback + manual hint (F3).
+        monkeypatch.setattr(
+            "hermes_cli.main_dashboard._find_stale_dashboard_pids",
+            lambda exclude_pids=None: [777],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.dashboard_service.find_service_managed_dashboard_pids",
+            lambda: {777: "ai.hermes.dashboard"},
+        )
+        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_procs.is_macos", lambda: True)
+        monkeypatch.setattr("os.getuid", lambda: 42)
+
+        import subprocess
+
+        def timeout_run(args, **kw):
+            if isinstance(args, list) and args[:2] == ["launchctl", "kickstart"]:
+                raise subprocess.TimeoutExpired(args, timeout=30)
+            return MagicMock(returncode=0, stdout="", stderr="")
+        monkeypatch.setattr("subprocess.run", timeout_run)
+
+        kill_pids = []
+        def capture_kill(pids, killed, failed):
+            kill_pids.extend(pids)
+            for p in pids:
+                killed.append(p)
+        monkeypatch.setattr("hermes_cli.dashboard_procs._kill_pids_posix", capture_kill)
+
+        result = _kill_stale_dashboard_processes(restart_managed=True)
+        assert 777 in kill_pids
+        out = capsys.readouterr().out
+        assert "run manually: launchctl kickstart -k" in out
+        assert "launchd will respawn via KeepAlive" in out
+        assert 777 in result.get("killed", [])

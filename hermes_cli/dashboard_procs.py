@@ -390,7 +390,7 @@ def _kill_stale_dashboard_processes(
                 )
                 print(f"✓ kickstarted {label} (PID {pid})")
                 kickstarted_labels.add(label)
-            except subprocess.CalledProcessError as exc:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 # Req 6 hint exactly: show command + explanation.
                 print(
                     f"✗ kickstart failed for {label} (PID {pid}); "
@@ -406,14 +406,10 @@ def _kill_stale_dashboard_processes(
     if restart_managed and managed_pids:
         excluded_pids = {pid for pid, lbl in managed_pids.items() if lbl in kickstarted_labels}
         pids = [pid for pid in pids if pid not in excluded_pids]
-        # Update the exclusion set so the systemd filter below sees them.
-        # `already_restarted_units` is a mutable set reference; in-place update works.
-        # When None, the filter below treats it as empty; our excluded pids are
-        # already removed from `pids`, so no additional filter needed.
-        if already_restarted_units is not None:
-            # In-place mutation of the caller's set is the intended contract
-            # (same pattern used above: `already_restarted_units |= {...}`).
-            already_restarted_units |= {lbl for lbl in kickstarted_labels}
+        if not pids:
+            return _empty_result()
+        # Kickstarted pids already removed from kill list; caller never reads
+        # already_restarted_units after this — no set update needed.
     # Non-restart (--stop) KeepAlive hint: if a scanned pid maps to our label.
     if not restart_managed:
         for pid in pids:

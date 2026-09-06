@@ -257,6 +257,15 @@ class TestNonMacOSGate:
         out = capsys.readouterr().out
         assert "systemd" in out.lower()
 
+    def test_status_prints_systemd_hint_on_linux_and_exits_1(self, monkeypatch, capsys):
+        import hermes_cli.dashboard_service as ds
+        monkeypatch.setattr(ds, "is_macos", lambda: False)
+        with pytest.raises(SystemExit) as exc:
+            ds.dashboard_service_status()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "only supported on macOS" in out
+
 
 # ------------------------------------------------------------------
 # Regression tests for spec review G1-G5 (F1-F7)

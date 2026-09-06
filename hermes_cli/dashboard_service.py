@@ -56,14 +56,12 @@ def find_service_managed_dashboard_pids() -> dict[int, str]:
     """
     if not is_macos():
         return {}
-    import glob
     import pwd
 
     result: dict[int, str] = {}
     # Use real account home via pwd (same resolution as get_dashboard_launchd_plist_path) —
     # tests mock Path.home() to redirect the glob target.
     try:
-        import pwd
         home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     except KeyError:
         home = Path.home()
@@ -101,7 +99,11 @@ def get_dashboard_launchd_plist_path() -> Path:
     import pwd
     suffix = _profile_suffix()
     name = f"ai.hermes.dashboard-{suffix}" if suffix else "ai.hermes.dashboard"
-    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    # Use real account home via pwd (same resolution as find_service_managed_dashboard_pids).
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        home = Path.home()
     return home / "Library" / "LaunchAgents" / f"{name}.plist"
 
 
@@ -125,18 +127,18 @@ def _degrade_dashboard_launchctl_error(exc: subprocess.CalledProcessError, what:
         f"({what} exit {exc.returncode}); the domain does not support bootstrapping."
     )
     # Manual workaround: use the plist's own ProgramArguments with nohup.
-    import plistlib
+    log_dir = get_hermes_home() / "logs"
     if plist_path.exists():
         try:
             plist_data = plistlib.loads(plist_path.read_bytes())
             args = plist_data.get("ProgramArguments", [])
             if args:
                 cmd_hint = " ".join(f'"{a}"' for a in args)
-                print(f"  Manual workaround: nohup {cmd_hint} > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
+                print(f"  Manual workaround: nohup {cmd_hint} > {log_dir}/dashboard.log 2>&1 &")
         except Exception as exc:
             print(f"Could not read installed plist for manual workaround: {exc}")
     else:
-        print(f"  Manual workaround: nohup python -m hermes_cli.main dashboard --host <host> --port <port> > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
+        print(f"  Manual workaround: nohup python -m hermes_cli.main dashboard --host <host> --port <port> > {log_dir}/dashboard.log 2>&1 &")
     sys.exit(1)
 
 
@@ -372,6 +374,9 @@ def dashboard_service_uninstall() -> None:
 
 def dashboard_service_status() -> None:
     """Print launchd state + HTTP /api/status probe result."""
+    if not is_macos():
+        print("Dashboard launchd service is only supported on macOS; on Linux use a systemd unit.")
+        sys.exit(1)
     plist_path = get_dashboard_launchd_plist_path()
     label = get_dashboard_launchd_label()
 
