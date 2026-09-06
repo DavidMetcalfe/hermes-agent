@@ -148,10 +148,13 @@ def gather_instruction(session_id: str, max_chars: int) -> str:
                 break
     if not texts:
         return ""
-    # Prefer the most substantive recent instruction over a trailing trivial ack ("yes", "ok").
-    substantive = next((t for t in texts if len(t) >= 15), texts[0])
     combined = "\n".join(reversed(texts))
-    return (substantive if len(texts) == 1 else combined)[:max_chars]
+    if len(combined) <= max_chars:
+        return combined
+    # Combined instruction is too long — keep the most recent substantive instruction instead of
+    # letting a trailing "yes / proceed" and the truncation edge hide the earlier task constraints.
+    substantive = next((t for t in texts if len(t) >= 15), texts[0])
+    return substantive[:max_chars]
 
 
 def _sanitize(text: str) -> str:
@@ -180,24 +183,30 @@ def build_user_prompt(tool_name: str, args: Dict[str, Any], instruction: str) ->
     return "\n\n".join(parts)
 
 
-_VERDICT_RE = re.compile(r"^(APPROVE|REDO|ESCALATE)(?:\s*[:\-]\s*(.*))?$", re.IGNORECASE)
+_VERDICT_RE = re.compile(r"^(APPROVE|REDO|ESCALATE)(?:[\s.:\-]+(.*))?$", re.IGNORECASE)
 
 
 def parse_verdict(raw: Optional[str]) -> Tuple[str, str]:
     """Return ``("approve"|"redo"|"escalate", reason)`` from the aux-LLM one-line response.
 
     Fail-CLOSED: any unparseable or missing verdict returns ``("escalate", ...)`` so a gated tool
-    never executes on a verdict the referee did not clearly approve. A referee that returns
-    ``**REDO**`` or ``# REDO`` (markdown) is correctly recognised via the regex.
+    never executes on a verdict the referee did not clearly approve. Robust to common model output
+    variations — trailing punctuation (``APPROVE.``), a space delimiter with no colon (``REDO
+    because ...``), markdown emphasis, and multi-line responses (the reason is taken from the next
+    non-empty line). A referee that returns ``**REDO**`` or ``# REDO`` is correctly recognised.
     """
     if not raw:
         return "escalate", "could not evaluate the step (empty verdict)"
-    cleaned = re.sub(r"[*_`#~>]", "", raw).strip()
-    match = _VERDICT_RE.match(cleaned)
+    lines = [line.strip() for line in re.sub(r"[*_`#~>]", "", raw).splitlines() if line.strip()]
+    if not lines:
+        return "escalate", "could not evaluate the step (empty verdict)"
+    match = _VERDICT_RE.match(lines[0])
     if not match:
-        return "escalate", f"could not evaluate the step (unclear verdict: {raw[:120]}"
+        return "escalate", f"could not evaluate the step (unclear verdict: {raw[:120]})"
     verdict = match.group(1).lower()
     reason = (match.group(2) or "").strip()[:400]
+    if not reason and len(lines) > 1 and verdict in ("redo", "escalate"):
+        reason = lines[1][:400].strip()
     if verdict == "redo" and not reason:
         reason = "Step reconsideration required"
     elif verdict == "escalate" and not reason:

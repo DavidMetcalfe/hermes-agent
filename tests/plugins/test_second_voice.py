@@ -197,6 +197,23 @@ class TestReflectionHelpers:
         assert plugin.r.parse_verdict("**REDO**: nope")[0] == "redo"
         assert plugin.r.parse_verdict("# ESCALATE: sensitive")[0] == "escalate"
 
+    def test_parse_verdict_trailing_punctuation(self, _isolate_env):
+        plugin = _load_plugin()
+        assert plugin.r.parse_verdict("APPROVE.")[0] == "approve"
+        assert plugin.r.parse_verdict("REDO: bad.")[0] == "redo"
+
+    def test_parse_verdict_space_delimiter_no_colon(self, _isolate_env):
+        plugin = _load_plugin()
+        verdict, reason = plugin.r.parse_verdict("REDO because this skips a step")
+        assert verdict == "redo"
+        assert reason == "because this skips a step"
+
+    def test_parse_verdict_multiline_uses_second_line_reason(self, _isolate_env):
+        plugin = _load_plugin()
+        verdict, reason = plugin.r.parse_verdict("REDO:\nthis is the reason to correct")
+        assert verdict == "redo"
+        assert reason == "this is the reason to correct"
+
     def test_parse_verdict_garbage_fails_closed(self, _isolate_env):
         plugin = _load_plugin()
         assert plugin.r.parse_verdict("maybe?")[0] == "escalate"
