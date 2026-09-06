@@ -115,6 +115,21 @@ def test_pure_pem_helper_includes_serverauth_excludes_others():
     included_oid = _pem_from_store_entries([(der_bytes, "x509_asn", ("1.3.6.1.5.5.7.3.1",))])
     assert len(included_oid) == 1
 
+    # Included: serverAuth OID frozenset — the ACTUAL shape ssl.enum_certificates
+    # returns on Windows (CPython Modules/_ssl.c parseKeyUsage -> PyFrozenSet_New).
+    # Regression: the filter originally checked isinstance(trust, tuple), which
+    # silently dropped every corporate CA carrying explicit serverAuth EKUs.
+    included_frozenset = _pem_from_store_entries([(der_bytes, "x509_asn", frozenset({"1.3.6.1.5.5.7.3.1"}))])
+    assert len(included_frozenset) == 1
+
+    # Excluded: non-serverAuth OID frozenset
+    excluded_frozenset = _pem_from_store_entries([(der_bytes, "x509_asn", frozenset({"1.3.6.1.5.2.3.4"}))])
+    assert excluded_frozenset == []
+
+    # Excluded: trust=False (explicitly distrusted) must never be accepted
+    excluded_false = _pem_from_store_entries([(der_bytes, "x509_asn", False)])
+    assert excluded_false == []
+
     # Dedup: same DER twice -> one PEM
     deduped = _pem_from_store_entries([
         (der_bytes, "x509_asn", True),

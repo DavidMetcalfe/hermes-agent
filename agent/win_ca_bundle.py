@@ -34,11 +34,14 @@ _bundle_lock = threading.Lock()
 _SERVER_AUTH_OID = "1.3.6.1.5.5.7.3.1"
 
 
-def _pem_from_store_entries(entries: list[tuple[bytes, str, bool | tuple]]) -> list[str]:
+def _pem_from_store_entries(entries: list[tuple[bytes, str, bool | frozenset | tuple]]) -> list[str]:
     """Pure helper: build PEM blocks from enum-style store entry tuples.
 
     Args:
-        entries: (cert_der_bytes, encoding_str, trust_bool_or_tuple)
+        entries: (cert_der_bytes, encoding_str, trust) as yielded by
+            ssl.enum_certificates() on Windows — trust is True or a
+            frozenset of OID strings (CPython Modules/_ssl.c parseKeyUsage
+            builds it with PyFrozenSet_New).
 
     Returns:
         List of PEM-formatted certificate strings (no file I/O, no sys.gate).
@@ -50,13 +53,18 @@ def _pem_from_store_entries(entries: list[tuple[bytes, str, bool | tuple]]) -> l
         # skip pkcs_7_asn; accept only x509_asn.
         if encoding != "x509_asn":
             continue
-        # Trust filtering: True is unambiguously trusted; tuple must contain
-        # the serverAuth OID to be accepted for server authentication.
+        # Trust filtering mirrors Lib/ssl.py _load_windows_store_certs:
+        # `trust is True or purpose.oid in trust`. trust is True or a
+        # frozenset of OIDs (never a tuple — Modules/_ssl.c:5487); membership
+        # in any iterable of OIDs is what matters, so no isinstance gate here.
         trusted = False
         if trust is True:
             trusted = True
-        elif isinstance(trust, tuple) and _SERVER_AUTH_OID in trust:
-            trusted = True
+        else:
+            try:
+                trusted = _SERVER_AUTH_OID in trust
+            except TypeError:
+                trusted = False
         if not trusted:
             continue
         # Dedup by SHA-256 of the DER bytes.
@@ -101,12 +109,12 @@ def windows_merged_ca_bundle() -> str | None:
 
         try:
             # 1. Enumerate Windows store certs.
-            store_entries: list[tuple[bytes, str, bool | tuple]] = []
+            store_entries: list[tuple[bytes, str, bool | frozenset | tuple]] = []
             try:
                 for store in ("ROOT", "CA"):
                     for cert_der, encoding, trust in ssl.enum_certificates(store):
                         # Note: ssl.enum_certificates returns (der_bytes, encoding, trust)
-                        # where trust is bool or tuple of OID strings.
+                        # where trust is True or a frozenset of OID strings.
                         store_entries.append((cert_der, encoding, trust))
             except Exception as exc:
                 logger.warning("agent.win_ca_bundle: store enumeration failed: %s", exc)
@@ -191,9 +199,17 @@ def windows_merged_ca_bundle() -> str | None:
             except NotImplementedError:
                 pass  # truststore-backed; validation succeeded.
 
-            # Cache memo.
+            # Cache memo. Log honestly: a certifi-only bundle (store enum failed or
+            # yielded nothing) is NOT the merged bundle the caller asked for — warn
+            # so a corporate box can tell the difference in agent.log.
             _bundle_path = str(cache_path)
-            logger.info("agent.win_ca_bundle: merged CA bundle built at %s", _bundle_path)
+            if pem_blocks:
+                logger.info("agent.win_ca_bundle: merged CA bundle built at %s", _bundle_path)
+            else:
+                logger.warning(
+                    "agent.win_ca_bundle: certifi-only bundle written to %s — "
+                    "no certificates loaded from the Windows store", _bundle_path
+                )
             return _bundle_path
 
         except Exception as exc:

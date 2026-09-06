@@ -47,3 +47,23 @@ def test_merged_none_keeps_today_behavior(clean_ca_env, monkeypatch):
     monkeypatch.setattr("agent.win_ca_bundle.windows_merged_ca_bundle", lambda: None)
     result = resolve_httpx_verify()
     assert result is True
+
+
+def test_ssl_verify_false_wins_over_merged_bundle(clean_ca_env, monkeypatch, tmp_path):
+    """Explicit ssl_verify: false (insecure mode) beats the merged Windows bundle —
+    the merged bundle is a DEFAULT, never an override."""
+    bundle_path = tmp_path / "merged_ca_bundle.pem"
+    import pathlib
+    bundle_path.write_text(pathlib.Path(certifi.where()).read_text(encoding="utf-8"), encoding="utf-8")
+    monkeypatch.setattr("agent.win_ca_bundle.windows_merged_ca_bundle", lambda: str(bundle_path))
+    assert resolve_httpx_verify(ssl_verify=False) is False
+
+
+def test_seam_fail_open_when_merged_hook_raises(clean_ca_env, monkeypatch):
+    """The merged-bundle lookup must never break client construction: any exception
+    from the lookup falls through to True (fail-open contract)."""
+    def _boom():
+        raise RuntimeError("simulated bundle failure")
+
+    monkeypatch.setattr("agent.win_ca_bundle.windows_merged_ca_bundle", _boom)
+    assert resolve_httpx_verify() is True

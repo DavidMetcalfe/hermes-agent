@@ -66,10 +66,14 @@ def _resolve_requests_verify(base_url: str = "") -> bool | str:
         if val and os.path.isfile(val):
             return val
     # 4. Merged Windows CA bundle (Task 2, #43294): default when no env override set.
-    from agent.win_ca_bundle import windows_merged_ca_bundle
-    merged = windows_merged_ca_bundle()
-    if merged:
-        return merged
+    #    Fail-open: any failure preserves today's behavior (True).
+    try:
+        from agent.win_ca_bundle import windows_merged_ca_bundle
+        merged = windows_merged_ca_bundle()
+        if merged:
+            return merged
+    except Exception as exc:
+        logger.warning("Windows merged CA bundle unavailable: %s", exc)
     return True
 
 
