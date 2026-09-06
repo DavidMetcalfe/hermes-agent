@@ -81,8 +81,7 @@ def find_service_managed_dashboard_pids() -> dict[int, str]:
         if not isinstance(label, str) or not label.startswith("ai.hermes.dashboard"):
             # Unrelated plists (e.g. gateway, unrelated tools) are ignored.
             continue
-        # Positive PID from launchctl = service-managed; 0/non-positive is skipped.
-        from hermes_cli.gateway import _launchd_domain, _launchd_print_service_pid
+        # Positive PID from launchd = service-managed; 0/non-positive is skipped.
         domain = _launchd_domain()
         loaded, pid = _launchd_print_service_pid(domain, label)
         if loaded and pid is not None and pid > 0:
