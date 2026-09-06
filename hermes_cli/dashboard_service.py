@@ -370,3 +370,35 @@ def dashboard_service_status() -> None:
             print(f"Dashboard HTTP down (connection error): {exc}")
     else:
         print("Could not determine host/port from installed plist for HTTP probe.")
+
+
+# ------------------------------------------------------------------
+# CLI dispatcher for `hermes dashboard service <verb>` (issue #44106)
+# ------------------------------------------------------------------
+
+_SERVICE_VERBS: dict[str, object] = {
+    "install": lambda a: dashboard_service_install(
+        a.host, a.port,
+        extra_args=(["--skip-build"] if getattr(a, "skip_build", False) else None),
+        force=getattr(a, "force", False),
+    ),
+    "start": lambda a: dashboard_service_start(
+        a.host, a.port,
+        extra_args=(["--skip-build"] if getattr(a, "skip_build", False) else None),
+    ),
+    "stop": lambda a: dashboard_service_stop(),
+    "restart": lambda a: dashboard_service_restart(),
+    "status": lambda a: dashboard_service_status(),
+    "uninstall": lambda a: dashboard_service_uninstall(),
+}
+
+
+def dashboard_service_command(args) -> None:
+    """Table-driven dispatcher: 6 verbs, zero elif ladders (issue #44106)."""
+    verb = getattr(args, "dashboard_service_command", None)
+    if verb is None:
+        raise SystemExit("dashboard service requires a verb (install/start/stop/restart/status/uninstall)")
+    handler = _SERVICE_VERBS.get(verb)
+    if handler is None:
+        raise SystemExit(f"Unknown dashboard service command: {verb}")
+    handler(args)

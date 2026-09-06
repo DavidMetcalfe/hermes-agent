@@ -531,3 +531,185 @@ class TestXMLInjectionRegression:
         # Confirm the exact original is recoverable (escape is transparent on read-back).
         assert "--foo" in prog_args
         assert 'a<b>&c"d' in prog_args
+
+
+# ------------------------------------------------------------------
+# Parser + dispatcher tests (issue #44106)
+# ------------------------------------------------------------------
+
+class TestDashboardServiceParser:
+    """Parser construction for `hermes dashboard service <verb>` — no real subprocess."""
+
+    def test_service_install_parses_with_flags(self):
+        import argparse
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser
+        root = argparse.ArgumentParser()
+        sub = root.add_subparsers()
+        build_dashboard_parser(
+            sub,
+            cmd_dashboard=lambda a: None,
+            cmd_dashboard_register=lambda a: None,
+            cmd_dashboard_service=lambda a: None,
+        )
+        args = root.parse_args([
+            "dashboard", "service", "install",
+            "--host", "0.0.0.0", "--port", "9200", "--force",
+        ])
+        assert args.dashboard_service_command == "install"
+        assert args.host == "0.0.0.0"
+        assert args.port == 9200
+        assert args.force is True
+        assert args.func is not None
+
+    def test_service_install_skip_build(self):
+        import argparse
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser
+        root = argparse.ArgumentParser()
+        sub = root.add_subparsers()
+        build_dashboard_parser(
+            sub,
+            cmd_dashboard=lambda a: None,
+            cmd_dashboard_register=lambda a: None,
+            cmd_dashboard_service=lambda a: None,
+        )
+        args = root.parse_args([
+            "dashboard", "service", "install", "--skip-build",
+        ])
+        assert args.skip_build is True
+        assert args.dashboard_service_command == "install"
+
+    def test_service_restart_no_extra_attrs(self):
+        import argparse
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser
+        root = argparse.ArgumentParser()
+        sub = root.add_subparsers()
+        build_dashboard_parser(
+            sub,
+            cmd_dashboard=lambda a: None,
+            cmd_dashboard_register=lambda a: None,
+            cmd_dashboard_service=lambda a: None,
+        )
+        args = root.parse_args(["dashboard", "service", "restart"])
+        assert args.dashboard_service_command == "restart"
+        assert args.func is not None
+
+    def test_service_missing_verb_exits(self):
+        import argparse
+        import pytest
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser
+        root = argparse.ArgumentParser()
+        sub = root.add_subparsers()
+        build_dashboard_parser(
+            sub,
+            cmd_dashboard=lambda a: None,
+            cmd_dashboard_register=lambda a: None,
+            cmd_dashboard_service=lambda a: None,
+        )
+        with pytest.raises(SystemExit) as exc:
+            root.parse_args(["dashboard", "service"])
+        assert exc.value.code == 2
+
+    def test_register_still_parses_no_regression(self):
+        import argparse
+        from hermes_cli.subcommands.dashboard import build_dashboard_parser
+        root = argparse.ArgumentParser()
+        sub = root.add_subparsers()
+        build_dashboard_parser(
+            sub,
+            cmd_dashboard=lambda a: None,
+            cmd_dashboard_register=lambda a: None,
+            cmd_dashboard_service=lambda a: None,
+        )
+        args = root.parse_args(["dashboard", "register", "--name", "test"])
+        assert args.dashboard_subcommand == "register"
+        assert args.name == "test"
+
+
+class TestDashboardServiceDispatcher:
+    """Table dispatch asserts: each verb forwards to the right module function."""
+
+    def test_install_forwards_force_and_skip_build(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_install", lambda *a, **k: calls.update({"verb": "install", "args": a, "kwargs": k}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(
+            dashboard_service_command="install",
+            host="127.0.0.1",
+            port=9119,
+            skip_build=True,
+            force=True,
+        )
+        dashboard_service_command(args)
+        assert calls["verb"] == "install"
+        # positional args: host, port; keyword args: extra_args, force
+        assert calls["args"] == ("127.0.0.1", 9119)
+        assert calls["kwargs"]["force"] is True
+        assert calls["kwargs"]["extra_args"] == ["--skip-build"]
+
+    def test_start_forwards_host_port_skip_build(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_start", lambda *a, **k: calls.update({"verb": "start", "args": a, "kwargs": k}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(
+            dashboard_service_command="start",
+            host="0.0.0.0",
+            port=9200,
+            skip_build=False,
+        )
+        dashboard_service_command(args)
+        assert calls["verb"] == "start"
+        assert calls["args"] == ("0.0.0.0", 9200)
+        assert calls["kwargs"]["extra_args"] is None or calls["kwargs"]["extra_args"] == None
+
+    def test_stop_called_no_args(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_stop", lambda *a, **k: calls.update({"verb": "stop"}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(dashboard_service_command="stop")
+        dashboard_service_command(args)
+        assert calls["verb"] == "stop"
+
+    def test_restart_called_no_args(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_restart", lambda *a, **k: calls.update({"verb": "restart"}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(dashboard_service_command="restart")
+        dashboard_service_command(args)
+        assert calls["verb"] == "restart"
+
+    def test_status_called_no_args(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_status", lambda *a, **k: calls.update({"verb": "status"}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(dashboard_service_command="status")
+        dashboard_service_command(args)
+        assert calls["verb"] == "status"
+
+    def test_uninstall_called_no_args(self, monkeypatch, profile_env):
+        import hermes_cli.dashboard_service as ds
+        calls = {}
+        monkeypatch.setattr(ds, "dashboard_service_uninstall", lambda *a, **k: calls.update({"verb": "uninstall"}))
+        from hermes_cli.dashboard_service import dashboard_service_command
+        import types
+        args = types.SimpleNamespace(dashboard_service_command="uninstall")
+        dashboard_service_command(args)
+        assert calls["verb"] == "uninstall"
+
+
+class TestBuildServeParserDoesNotBreak:
+    """Lean hot-path parser (`serve`) stays clean after the service parser addition."""
+
+    def test_serve_parser_still_builds(self):
+        from hermes_cli.subcommands.dashboard import build_serve_parser
+        p = build_serve_parser(cmd_dashboard=lambda a: None)
+        assert p.prog == "hermes serve"
