@@ -62,7 +62,7 @@ def find_service_managed_dashboard_pids() -> dict[int, str]:
     # Use real account home via pwd (same resolution as get_dashboard_launchd_plist_path) —
     # tests mock Path.home() to redirect the glob target.
     try:
-        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows (is_macos gate above)
     except KeyError:
         home = Path.home()
     launchd_dir = home / "Library" / "LaunchAgents"
@@ -101,7 +101,7 @@ def get_dashboard_launchd_plist_path() -> Path:
     name = f"ai.hermes.dashboard-{suffix}" if suffix else "ai.hermes.dashboard"
     # Use real account home via pwd (same resolution as find_service_managed_dashboard_pids).
     try:
-        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
     except KeyError:
         home = Path.home()
     return home / "Library" / "LaunchAgents" / f"{name}.plist"

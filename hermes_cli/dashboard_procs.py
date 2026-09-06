@@ -375,7 +375,7 @@ def _kill_stale_dashboard_processes(
     # --- Kickstart service-managed LaunchAgent dashboards (req 5) ---
     # For every scanned pid that maps to our label: supervised restart first.
     if restart_managed and managed_pids and is_macos():
-        uid_str = str(os.getuid())
+        uid_str = str(os.getuid())  # windows-footgun: ok — POSIX launchd (macOS) helper, inside is_macos() gate
         for pid in pids:
             label = managed_pids.get(pid)
             if label is None:

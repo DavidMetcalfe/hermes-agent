@@ -39,7 +39,7 @@ class TestFindServiceManagedDashboardPids:
     """Discovery via plists + launchctl, not argv heuristics."""
 
     def test_non_macos_returns_empty(self, monkeypatch):
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: False)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: False)
         assert find_service_managed_dashboard_pids() == {}
 
     def test_finds_our_plists_ignores_others(self, tmp_path, monkeypatch):
@@ -83,7 +83,7 @@ class TestFindServiceManagedDashboardPids:
                 (True, 12346) if label == "ai.hermes.dashboard-work" else (False, None)
             ),
         )
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         monkeypatch.setattr("hermes_cli.gateway._launchd_domain", lambda: "gui/501")
         # Redirect pwd-based home resolution (find_service_managed_dashboard_pids uses pwd.getpwuid).
         import pwd as _pwd
@@ -103,7 +103,7 @@ class TestFindServiceManagedDashboardPids:
         bad = d / "ai.hermes.dashboard-corrupt.plist"
         bad.write_bytes(b"not xml")
 
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         # Redirect pwd-based home resolution.
         import pwd as _pwd
         monkeypatch.setattr(
@@ -141,9 +141,9 @@ class TestKillStaleDashboardLaunchdIntegration:
             "hermes_cli.dashboard_service.find_service_managed_dashboard_pids",
             lambda: {999: "ai.hermes.dashboard"},
         )
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         monkeypatch.setattr("hermes_cli.dashboard_procs.is_macos", lambda: True)
-        monkeypatch.setattr("os.getuid", lambda: 42)
+        monkeypatch.setattr("os.getuid", lambda: 42)  # windows-footgun: ok — stubbing the POSIX call, never executed on Windows
 
         # Mock successful kickstart.
         kickstart_calls = []
@@ -183,9 +183,9 @@ class TestKillStaleDashboardLaunchdIntegration:
             "hermes_cli.dashboard_service.find_service_managed_dashboard_pids",
             lambda: {999: "ai.hermes.dashboard"},
         )
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         monkeypatch.setattr("hermes_cli.dashboard_procs.is_macos", lambda: True)
-        monkeypatch.setattr("os.getuid", lambda: 42)
+        monkeypatch.setattr("os.getuid", lambda: 42)  # windows-footgun: ok — stubbing the POSIX call, never executed on Windows
 
         # Kickstart always fails.
         def fail_run(args, **kw):
@@ -219,7 +219,7 @@ class TestKillStaleDashboardLaunchdIntegration:
             "hermes_cli.dashboard_service.find_service_managed_dashboard_pids",
             lambda: {888: "ai.hermes.dashboard-work"},
         )
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         monkeypatch.setattr("hermes_cli.dashboard_procs.is_macos", lambda: True)
 
         def capture_kill(pids, killed, failed):
@@ -243,9 +243,9 @@ class TestKillStaleDashboardLaunchdIntegration:
             "hermes_cli.dashboard_service.find_service_managed_dashboard_pids",
             lambda: {777: "ai.hermes.dashboard"},
         )
-        monkeypatch.setattr("hermes_cli.gateway.is_macos", lambda: True)
+        monkeypatch.setattr("hermes_cli.dashboard_service.is_macos", lambda: True)
         monkeypatch.setattr("hermes_cli.dashboard_procs.is_macos", lambda: True)
-        monkeypatch.setattr("os.getuid", lambda: 42)
+        monkeypatch.setattr("os.getuid", lambda: 42)  # windows-footgun: ok — stubbing the POSIX call, never executed on Windows
 
         import subprocess
 
