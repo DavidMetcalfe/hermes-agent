@@ -100,7 +100,7 @@ describe('model catalog search: fold between filter and highlight', () => {
       // Partial label match -> <mark>Qwen3.8</mark> + ' Flash'.
       expect(screen.getByText('Qwen3.8', { selector: 'mark' })).toBeDefined()
       // The row label (before the meta suffix) is intact.
-      expect(rowTruncateSpan('Qwen3.8 Flash')).toBeDefined()
+      expect(rowTruncateSpan('Qwen3.8 Flash')).not.toBeNull()
       // The fold must not over-match: a qwen query still hides GPT rows.
       expect(rowTruncateSpan('GPT-5.1')).toBeNull()
     })
