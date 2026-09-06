@@ -6,30 +6,35 @@ rather than being managed only by the Linux-only systemd branch.
 
 No `--detach`: the dashboard already runs foreground (`cmd_dashboard`) — detach
 would exit before launchd could supervise it, and KeepAlive would respawn the
-launcher, not the server (the PR #40636 defect).
+launcher, not the server (the PR #40636 defect). The degraded fallback is a
+manual nohup hint (not a detached gateway spawn — `_spawn_detached_gateway()`
+spawns a GATEWAY, which is the wrong service for the dashboard).
 """
 
 import os
 import plistlib
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 from hermes_cli.gateway import (
     _launchctl_bootstrap,
-    _launchd_degrade_or_raise,
+    _launchctl_domain_unsupported,
+    _launchctl_kickstart_current,
     _launchd_domain,
+    _launchd_error_indicates_unloaded,
+    _launchd_print_service_pid,
     _profile_suffix,
-    _profile_arg,
     get_python_path,
     is_macos,
-    PROJECT_ROOT,
     _service_venv_dir,
     _build_service_path_dirs,
     _append_node_dir_for_service,
     _stable_service_working_dir,
 )
+from hermes_cli.main_dashboard import _dashboard_probe_host
 from hermes_constants import get_hermes_home
 
 
@@ -46,6 +51,41 @@ def get_dashboard_launchd_plist_path() -> Path:
     name = f"ai.hermes.dashboard-{suffix}" if suffix else "ai.hermes.dashboard"
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     return home / "Library" / "LaunchAgents" / f"{name}.plist"
+
+
+# ------------------------------------------------------------------
+# Shared degradation policy: domain-unsupported (not detached gateway spawn)
+# ------------------------------------------------------------------
+
+def _degrade_dashboard_launchctl_error(exc: subprocess.CalledProcessError, what: str) -> None:
+    """Domain unsupported (5/125) for dashboard launchctl: clear message + manual nohup hint + exit 1.
+
+    WHY no detached spawn here: gateway's degrade calls `_spawn_detached_gateway()`
+    (gateway.py:3582) which launches a GATEWAY process, not the dashboard. Reusing it
+    for the dashboard would silently start the wrong supervised service.
+    """
+    if not _launchctl_domain_unsupported(exc.returncode):
+        raise exc
+    plist_path = get_dashboard_launchd_plist_path()
+    label = get_dashboard_launchd_label()
+    print(
+        f"launchd cannot manage the dashboard service on this macOS version "
+        f"({what} exit {exc.returncode}); the domain does not support bootstrapping."
+    )
+    # Manual workaround: use the plist's own ProgramArguments with nohup.
+    import plistlib
+    if plist_path.exists():
+        try:
+            plist_data = plistlib.loads(plist_path.read_bytes())
+            args = plist_data.get("ProgramArguments", [])
+            if args:
+                cmd_hint = " ".join(f'"{a}"' for a in args)
+                print(f"  Manual workaround: nohup {cmd_hint} > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
+        except Exception:
+            pass
+    else:
+        print(f"  Manual workaround: nohup python -m hermes_cli.main dashboard --host <host> --port <port> > ~/Library/LaunchAgents/dashboard.log 2>&1 &")
+    sys.exit(1)
 
 
 def generate_dashboard_launchd_plist(
@@ -147,9 +187,8 @@ def generate_dashboard_launchd_plist(
 # Service lifecycle (macOS-gated; Linux prints a clear hint and exits)
 # ------------------------------------------------------------------
 
-
 def dashboard_service_install(host: str, port: int, extra_args: list[str] | None = None, *, force: bool = False) -> None:
-    """Write the dashboard LaunchAgent plist and bootstrap it."""
+    """Write the dashboard LaunchAgent plist and bootstrap it (mirrors gateway install)."""
     if not is_macos():
         print("Dashboard launchd service is only supported on macOS; on Linux use a systemd unit.")
         sys.exit(1)
@@ -158,40 +197,77 @@ def dashboard_service_install(host: str, port: int, extra_args: list[str] | None
         print(f"Dashboard service already installed at: {plist_path}")
         print("Use --force to reinstall.")
         return
+    # Simpler flow: gateway install (gateway.py:3868-3896) writes, then bootstraps.
+    # Only boot out before write if the plist existed (refresh semantics); here we
+    # only reach write when missing or force=True, so no pre-bootout needed for missing.
+    if plist_path.exists() and force:
+        label = get_dashboard_launchd_label()
+        domain = _launchd_domain()
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=30)
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     plist_path.write_text(generate_dashboard_launchd_plist(host, port, extra_args=extra_args), encoding="utf-8")
     label = get_dashboard_launchd_label()
     domain = _launchd_domain()
-    # Boot out any stale registration before bootstrap (same pattern as gateway).
-    subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=30)
     try:
         _launchctl_bootstrap(domain, plist_path, label, timeout=30)
     except subprocess.CalledProcessError as e:
-        _launchd_degrade_or_raise(e, "launchctl bootstrap")
+        _degrade_dashboard_launchctl_error(e, "launchctl bootstrap")
         return
     print(f"Dashboard service installed at: {plist_path}")
 
 
 def dashboard_service_start(host: str, port: int, extra_args: list[str] | None = None) -> None:
+    """Kickstart the dashboard service; self-heal if plist is missing (mirrors gateway start)."""
     if not is_macos():
         print("Dashboard launchd service is only supported on macOS; on Linux use a systemd unit.")
         sys.exit(1)
     plist_path = get_dashboard_launchd_plist_path()
     label = get_dashboard_launchd_label()
+
+    # Self-heal when plist is missing (gateway.py:3916-3927).
+    if not plist_path.exists():
+        print("↻ Dashboard launchd plist missing; regenerating service definition")
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_text(generate_dashboard_launchd_plist(host, port, extra_args=extra_args), encoding="utf-8")
+        # After regeneration, bootstrap then kickstart (gateway.py:3925-3926).
+        domain = _launchd_domain()
+        try:
+            _launchctl_bootstrap(domain, plist_path, label, timeout=30)
+            _launchctl_kickstart_current(label)
+        except subprocess.CalledProcessError as e:
+            if _launchd_error_indicates_unloaded(e):
+                # Unloaded after regeneration: retry bootstrap then kickstart.
+                try:
+                    _launchctl_bootstrap(domain, plist_path, label, timeout=30)
+                    _launchctl_kickstart_current(label)
+                except subprocess.CalledProcessError as e2:
+                    _degrade_dashboard_launchctl_error(e2, "launchctl bootstrap after self-heal")
+                    return
+            else:
+                _degrade_dashboard_launchctl_error(e, "launchctl bootstrap (self-heal)")
+                return
+        print("Dashboard service started (regenerated).")
+        return
+
+    # Plist exists: kickstart first (gateway.py:3929-3931). Never bootstrap a running service.
     domain = _launchd_domain()
     try:
-        subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+        _launchctl_kickstart_current(label)
     except subprocess.CalledProcessError as e:
-        if e.returncode == 5:  # EIO = already registered; recover.
-            subprocess.run(["launchctl", "bootout", f"{domain}/{label}"], check=False, timeout=30)
-            subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)], check=True, timeout=30)
+        if _launchd_error_indicates_unloaded(e):
+            # Job not loaded: re-bootstrap then re-kickstart (gateway.py:3936-3938).
+            print("↻ Dashboard launchd job was unloaded; reloading service definition")
+            try:
+                _launchctl_bootstrap(domain, plist_path, label, timeout=30)
+            except subprocess.CalledProcessError as e_boot:
+                _degrade_dashboard_launchctl_error(e_boot, "launchctl bootstrap")
+                return
+            try:
+                _launchctl_kickstart_current(label)
+            except subprocess.CalledProcessError as e_kick:
+                raise e_kick
         else:
             raise
-    try:
-        subprocess.run(["launchctl", "kickstart", f"{domain}/{label}"], check=True, timeout=30)
-    except subprocess.CalledProcessError:
-        print(f"Failed to kickstart {domain}/{label}; try: launchctl kickstart -k {domain}/{label}")
-        raise
     print("Dashboard service started.")
 
 
@@ -241,14 +317,12 @@ def dashboard_service_status() -> None:
     plist_path = get_dashboard_launchd_plist_path()
     label = get_dashboard_launchd_label()
 
-    # Launchd registration / PID from plist ProgramArguments (source of truth)
     host: str | None = None
     port: int | None = None
     if plist_path.exists():
         try:
             plist_data = plistlib.loads(plist_path.read_bytes())
             prog_args = plist_data.get("ProgramArguments", [])
-            # Find --host and --port from ProgramArguments array
             for i, arg in enumerate(prog_args):
                 if arg == "--host" and i + 1 < len(prog_args):
                     host = prog_args[i + 1]
@@ -264,38 +338,20 @@ def dashboard_service_status() -> None:
         sys.exit(1)
 
     domain = _launchd_domain()
-    launchd_registered = False
-    launchd_pid = None
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True, text=True, timeout=10,
-        )
-        launchd_registered = result.returncode == 0
-        # Parse PID from output like `"PID" = 1234;`
-        for line in result.stdout.splitlines():
-            if '"PID"' in line and '=' in line:
-                try:
-                    pid_str = line.split('=', 1)[1].strip().rstrip(';').strip('"')
-                    pid_val = int(pid_str)
-                    if pid_val > 0:
-                        launchd_pid = pid_val
-                except ValueError:
-                    pass
-    except Exception:
-        pass
-
-    if launchd_registered and launchd_pid is not None:
+    # Reuse gateway parser directly (F3).
+    loaded, pid = _launchd_print_service_pid(domain, label)
+    if loaded and pid is not None and pid > 0:
         print(f"Dashboard service registered with launchd: {label}")
-        print(f"Supervising PID: {launchd_pid}")
-    elif launchd_registered:
+        print(f"Supervising PID: {pid}")
+    elif loaded:
         print(f"Dashboard service registered with launchd: {label} (not running)")
     else:
         print(f"Dashboard service not registered with launchd: {label}")
 
-    # HTTP probe to configured host:port (read from plist, the source of truth)
+    # HTTP probe with normalized loopback host (F6 / F3).
     if host is not None and port is not None:
-        url = f"http://{host}:{port}/api/status"
+        probe_host = _dashboard_probe_host(host)
+        url = f"http://{probe_host}:{port}/api/status"
         try:
             with urllib.request.urlopen(url, timeout=3) as resp:
                 print(f"Dashboard HTTP up ({resp.status}) at {url}")
@@ -306,5 +362,3 @@ def dashboard_service_status() -> None:
             print(f"Dashboard HTTP down (connection error): {exc}")
     else:
         print("Could not determine host/port from installed plist for HTTP probe.")
-
-
