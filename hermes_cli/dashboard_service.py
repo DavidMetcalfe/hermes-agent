@@ -40,6 +40,54 @@ from xml.sax.saxutils import escape
 from hermes_constants import get_hermes_home
 
 
+def find_service_managed_dashboard_pids() -> dict[int, str]:
+    """Discover OUR dashboard LaunchAgent PIDs from plists (not argv heuristics).
+
+    WHY launchd, not argv substrings: the scanner's ``_DASHBOARD_PATTERNS``
+    matches generic ``serve``/``dashboard`` strings that also appear in
+    unrelated commands (#87594 class). Our own plists have exact ``Label``
+    values, so ``launchctl print`` against the label yields a verified PID.
+    The mapping is exact (pid → label) and the exclusion uses the label,
+    not a string-match.
+
+    On non-macOS: returns {} (pure query, no lifecycle command, no sys.exit).
+    """
+    if not is_macos():
+        return {}
+    import glob
+    import pwd
+
+    result: dict[int, str] = {}
+    # Use real account home via pwd (same resolution as get_dashboard_launchd_plist_path) —
+    # tests mock Path.home() to redirect the glob target.
+    try:
+        import pwd
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        home = Path.home()
+    launchd_dir = home / "Library" / "LaunchAgents"
+    if not launchd_dir.is_dir():
+        return result
+    for plist_path in launchd_dir.glob("ai.hermes.dashboard*.plist"):
+        try:
+            plist_data = plistlib.load(plist_path.open("rb"))
+        except Exception as exc:
+            # One-line diagnostic, not silent; other plists still processed.
+            print(f"[find_service_managed_dashboard_pids] skipped unparseable {plist_path}: {exc}")
+            continue
+        label = plist_data.get("Label")
+        if not isinstance(label, str) or not label.startswith("ai.hermes.dashboard"):
+            # Unrelated plists (e.g. gateway, unrelated tools) are ignored.
+            continue
+        # Positive PID from launchctl = service-managed; 0/non-positive is skipped.
+        from hermes_cli.gateway import _launchd_domain, _launchd_print_service_pid
+        domain = _launchd_domain()
+        loaded, pid = _launchd_print_service_pid(domain, label)
+        if loaded and pid is not None and pid > 0:
+            result[pid] = label
+    return result
+
+
 def get_dashboard_launchd_label() -> str:
     """LaunchAgent label for the dashboard, scoped per profile."""
     suffix = _profile_suffix()
