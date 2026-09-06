@@ -2,6 +2,7 @@
 import base64
 import ssl
 from pathlib import Path
+from typing import cast
 
 import certifi
 import pytest
@@ -129,6 +130,11 @@ def test_pure_pem_helper_includes_serverauth_excludes_others():
     # Excluded: trust=False (explicitly distrusted) must never be accepted
     excluded_false = _pem_from_store_entries([(der_bytes, "x509_asn", False)])
     assert excluded_false == []
+
+    # Excluded: empty frozenset (cert present but no EKUs listed) and None
+    # (not a shape enum_certificates yields, but must not blow up either).
+    assert _pem_from_store_entries([(der_bytes, "x509_asn", frozenset())]) == []
+    assert _pem_from_store_entries([(der_bytes, "x509_asn", cast("bool | frozenset | tuple", None))]) == []
 
     # Dedup: same DER twice -> one PEM
     deduped = _pem_from_store_entries([
