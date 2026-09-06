@@ -13,10 +13,7 @@ from dataclasses import dataclass
 
 from utils import is_truthy_value
 from hermes_constants import INDICATOR_STYLES
-try:
-    from agent.i18n import SUPPORTED_LANGUAGES
-except Exception:
-    SUPPORTED_LANGUAGES = ()
+from agent.i18n import SUPPORTED_LANGUAGES
 
 logger = logging.getLogger(__name__)
 

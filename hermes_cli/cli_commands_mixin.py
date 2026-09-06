@@ -2677,8 +2677,8 @@ class CLICommandsMixin:
 
     def _handle_language_command(self, cmd: str):
         """Handle /language [<code>|status] — set or show the UI language for static messages."""
-        from agent.i18n import SUPPORTED_LANGUAGES, normalize_language, reset_language_cache
-        current = (self.config.get("display") or {}).get("language", "en")
+        from agent.i18n import SUPPORTED_LANGUAGES, get_language, normalize_language, reset_language_cache
+        current = get_language()  # effective: HERMES_LANGUAGE > display.language > en
         arg = _command_arg(cmd, lower=True)
         usage = _dim_line(f"Usage: /language [{'|'.join(SUPPORTED_LANGUAGES)}]")
         if not arg or arg == "status":
