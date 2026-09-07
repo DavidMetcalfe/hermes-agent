@@ -47,8 +47,8 @@ class TestConsoleEngineSensitiveKeyGuard:
         assert not _is_sensitive_config_key("provider.openai.api_key")
         assert not _is_sensitive_config_key("ui.theme")
 
-    def test_approval_override_skips_guard(self, monkeypatch):
-        """approval_override=True (sanctioned /approvals command) must
+    def test_operator_scope_skips_guard(self, operator_write_scope, monkeypatch):
+        """The sanctioned operator path (operator scope + human present) must
         NOT trigger the sensitive-key refusal — it proceeds past the guard."""
         import hermes_cli.config as cfg
 
@@ -67,9 +67,30 @@ class TestConsoleEngineSensitiveKeyGuard:
         monkeypatch.setattr(sys, "stderr", err)
 
         try:
-            cfg.set_config_value("approvals.mode", "off", approval_override=True)
+            cfg.set_config_value("approvals.mode", "off")
         except SystemExit:
             pass  # is_managed exits — that's AFTER the guard, which is what we test
 
         assert not refuse_called, \
-            "approval_override=True must NOT trigger the sensitive-key refusal"
+            "the operator-qualified scope must NOT trigger the sensitive-key refusal"
+
+    def test_operator_scope_without_human_still_refused(self, monkeypatch):
+        """Entering the operator scope WITHOUT human presence must still refuse:
+        the conjunctive check is evaluated inside the writer, so a scope forged
+        by agent-executed Python in a headless context grants nothing
+        (#104697 review: an importable token is mintable by construction)."""
+        import hermes_cli.config as cfg
+        from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+
+        # Deliberately NOT interactive, NOT a gateway (no env, no platform).
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+        monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+        token = grant_operator_policy_write()
+        try:
+            with pytest.raises(SystemExit):
+                cfg.set_config_value("approvals.mode", "off")
+        finally:
+            reset_operator_policy_write(token)
