@@ -2424,16 +2424,18 @@ class CLICommandsMixin:
         """Show or persist the profile-wide dangerous-command approval mode."""
         from hermes_cli.approval_mode import run_approval_mode_command
         parts = (cmd_original or "").strip().split(None, 1)
-        # The human typing this slash command in the interactive REPL IS the operator:
-        # stamp the one-shot grant around the write. The writer independently requires
-        # the human-actor context (TTY stdin), which this REPL process has; an agent
-        # cannot stamp meaningfully because its own contexts lack the TTY-handler
-        # provenance and any grant it forges is consumed only by this handler's call
-        # (#104697 review rounds 2-3).
+        if len(parts) <= 1:
+            result = run_approval_mode_command(None)
+            _cp(f"  {result.message}")
+            return
         from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
-        token = grant_operator_policy_write()
         try:
-            result = run_approval_mode_command(parts[1] if len(parts) > 1 else None)
+            token = grant_operator_policy_write()
+        except RuntimeError as exc:
+            _cp(f"  ✗ {exc}")
+            return
+        try:
+            result = run_approval_mode_command(parts[1])
         finally:
             reset_operator_policy_write(token)
         _cp(f"  {result.message}")

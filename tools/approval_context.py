@@ -334,11 +334,45 @@ _operator_policy_write_ctx: contextvars.ContextVar[bool] = contextvars.ContextVa
     "operator_policy_write", default=False)
 
 
+def _is_sanctioned_policy_stamp_caller() -> bool:
+    """True when the caller chain at stamp time is a sanctioned human-input boundary.
+
+    Sanctioned stamp sites:
+    - REPL / TUI slash worker: process_command in cli.py
+    - Gateway: _handle_approvals_command in gateway/slash_commands.py (behind admin check)
+    - TUI RPC: _tui_policy_write in tui_gateway/methods_config_set.py (human renderer RPC)
+
+    Frame inspection forecloses casual import-and-call; a determined in-process
+    attacker faking frames remains out of the unattended threat model (existing
+    disclosed residual).
+    """
+    import inspect
+    stack = inspect.stack()
+    for frame_info in stack:
+        fn = frame_info.function
+        raw_path = frame_info.filename or ""
+        path = raw_path.replace(os.sep, "/")
+        if fn == "process_command" and (path.endswith("/cli.py") or path == "cli.py"):
+            return True
+        if fn == "_handle_approvals_command" and (
+            path.endswith("/gateway/slash_commands.py") or path.endswith("gateway/slash_commands.py")
+        ):
+            return True
+        if fn == "_tui_policy_write" and (
+            path.endswith("/tui_gateway/methods_config_set.py") or path.endswith("tui_gateway/methods_config_set.py")
+        ):
+            return True
+    return False
+
+
 def grant_operator_policy_write() -> "contextvars.Token[bool]":
     """Stamp a one-shot operator-policy write grant. Call ONLY from a sanctioned
     human-actor path: the gateway /approvals handler (after its enabled-admin
-    check — the human is the authenticated command sender) or the interactive
-    operator CLI (the human typing the command)."""
+    check — the human is the authenticated command sender), the interactive
+    operator CLI (the human typing the command via process_command), or the
+    TUI RPC setter."""
+    if not _is_sanctioned_policy_stamp_caller():
+        raise RuntimeError("operator policy write grant requires the sanctioned input boundary")
     return _operator_policy_write_ctx.set(True)
 
 

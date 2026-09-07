@@ -88,9 +88,20 @@ class TestConsoleEngineSensitiveKeyGuard:
         monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
         monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
 
+        # Even if an operator scope was somehow granted, headless context without
+        # a sanctioned handler frame in the writer refuses at write time.
+        monkeypatch.setattr("tools.approval_context._is_sanctioned_policy_stamp_caller", lambda: True)
         token = grant_operator_policy_write()
         try:
             with pytest.raises(SystemExit):
                 cfg.set_config_value("approvals.mode", "off")
         finally:
             reset_operator_policy_write(token)
+
+    def test_unbound_grant_operator_policy_write_raises_without_sanctioned_boundary(self):
+        """grant_operator_policy_write() must refuse (raise RuntimeError) when called
+        directly outside the sanctioned input boundary (#104697 P1-A)."""
+        from tools.approval_context import grant_operator_policy_write
+
+        with pytest.raises(RuntimeError, match="operator policy write grant requires the sanctioned input boundary"):
+            grant_operator_policy_write()

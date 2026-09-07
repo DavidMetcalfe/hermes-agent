@@ -103,6 +103,7 @@ def operator_write_scope(monkeypatch):
     import hermes_cli.config as _cfg
     from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
 
+    monkeypatch.setattr("tools.approval_context._is_sanctioned_policy_stamp_caller", lambda: True)
     token = grant_operator_policy_write()
     orig = _cfg._policy_write_authorized
 

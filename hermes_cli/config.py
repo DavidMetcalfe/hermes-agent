@@ -1000,6 +1000,10 @@ def _policy_write_authorized() -> bool:
             path.endswith("gateway/slash_commands.py")
             or path.endswith("hermes_cli/cli_commands_mixin.py")):
             return True
+        if fn == "_tui_policy_write" and (
+            path.endswith("tui_gateway/methods_config_set.py")
+            or path.endswith("/tui_gateway/methods_config_set.py")):
+            return True
     return False
 
 
