@@ -3823,6 +3823,14 @@ _CONFIG_USAGE = """Available commands:
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
+    handler = _CONFIG_SUBCOMMANDS.get(subcmd)
+    if handler is not None:
+        handler(args)
+        return
+    print(f"Unknown config command: {subcmd}")
+    print()
+    print(_CONFIG_USAGE)
+    sys.exit(1)
 
 
 # ---- OPTIONAL_ENV_VARS injection from provider profiles and platform plugins (once, at import) ----
