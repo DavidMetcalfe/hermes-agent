@@ -403,3 +403,23 @@ def _execute_code_profile_is_trusted() -> bool:
         return False
     trusted = [p.lower() for p in _get_trusted_execute_code_profiles()]
     return bool(profile) and profile in trusted
+
+
+def trusted_execute_code_status_line() -> str:
+    """/status line: the active profile's execute_code trust state (#44993)."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        profile = get_active_profile_name()
+    except Exception:
+        profile = None
+
+    if not profile:
+        return "execute_code trust: (no active profile)"
+
+    try:
+        is_trusted = _execute_code_profile_is_trusted()
+    except Exception:
+        is_trusted = False
+
+    status_str = "trusted" if is_trusted else "not trusted"
+    return f"execute_code trust: {profile} ({status_str})"
