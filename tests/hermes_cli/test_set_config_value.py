@@ -401,11 +401,11 @@ class TestCronModelDriftConfigWarning:
 
 class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
-    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
+    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, operator_write_scope, value):
         """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
-        # approvals.mode is security-sensitive; approval_override is the
-        # dedicated /approvals channel (#81108).
-        set_config_value("approvals.mode", value, approval_override=True)
+        # approvals.mode is security-sensitive; the fixture enters the sanctioned
+        # operator write scope (#104697 review boundary).
+        set_config_value("approvals.mode", value)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -417,10 +417,9 @@ class TestStringTypedConfigValues:
         ("approvals.timeout", "30", 30),
     ])
     def test_non_string_defaults_keep_existing_coercion(
-        self, _isolated_hermes_home, key, value, expected
+        self, _isolated_hermes_home, operator_write_scope, key, value, expected
     ):
-        approval_override = key == "approvals.timeout"  # security-sensitive key
-        set_config_value(key, value, approval_override=approval_override)
+        set_config_value(key, value)
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -950,9 +949,9 @@ class TestSensitiveConfigKeyGuard:
         ("security.redact_secrets", False),  # bool default → "off" coerces to False
         ("command_allowlist", "git push --force"),  # list default → literal string
     ])
-    def test_sensitive_key_allowed_with_approval_override(self, _isolated_hermes_home, key, expected):
-        """approval_override (the dedicated /approvals channel) may write."""
-        set_config_value(key, "off" if key != "command_allowlist" else "git push --force", approval_override=True)
+    def test_sensitive_key_allowed_for_operator_scope(self, _isolated_hermes_home, operator_write_scope, key, expected):
+        """The sanctioned operator path (operator scope + human present) may write."""
+        set_config_value(key, "off" if key != "command_allowlist" else "git push --force")
 
         import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
@@ -1006,7 +1005,8 @@ class TestSensitiveConfigKeyGuard:
         """Generic ``force=True`` must NOT authorize a security-policy write
         at the writer layer either: an alternate CLI entrypoint reaching
         set_config_value with force would otherwise bypass the approval gate
-        (#81108). Only the dedicated approval_override counts."""
+        (#81108). Only the conjunctive operator-scope + human-presence check
+        counts."""
         with pytest.raises(SystemExit):
             set_config_value(key, "off", force=True)
 

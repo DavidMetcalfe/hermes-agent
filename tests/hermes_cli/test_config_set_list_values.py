@@ -107,22 +107,22 @@ def test_multiline_yaml_mapping_is_parsed(user_home):
     }
 
 
-def test_string_typed_key_bracket_value_stays_string(user_home):
+def test_string_typed_key_bracket_value_stays_string(user_home, operator_write_scope):
     """Keys whose DEFAULT_CONFIG type is str must never be coerced —
     even when the value looks like a list literal."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "[off]", approval_override=True)
+    set_config_value("approvals.mode", "[off]")
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "[off]"
     assert isinstance(raw["approvals"]["mode"], str)
 
 
-def test_string_typed_key_negative_number_stays_string(user_home):
+def test_string_typed_key_negative_number_stays_string(user_home, operator_write_scope):
     """'-5' for a string-typed key must remain the string '-5'."""
     from hermes_cli.config import set_config_value, read_raw_config
 
-    set_config_value("approvals.mode", "-5", approval_override=True)
+    set_config_value("approvals.mode", "-5")
     raw = read_raw_config()
     assert raw["approvals"]["mode"] == "-5"
 

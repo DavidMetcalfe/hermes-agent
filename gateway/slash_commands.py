@@ -888,7 +888,17 @@ class GatewaySlashCommandsMixin(
             return "Only gateway admins can change the persistent approval mode."
         # Approval checks load config dynamically; do not evict the cached agent or alter its
         # system prompt/tool schema (prompt-cache prefix is sacred).
-        return run_approval_mode_command(requested).message
+        # The admin's slash command IS the human decision: stamp the one-shot operator
+        # grant (stamped AFTER the enabled-admin check) so the writer accepts this write.
+        # The grant is process-local and consumed by the writer's context check; agent
+        # code cannot enter it meaningfully because the writer also requires a human-actor
+        # context, which a gateway backend process is not (#104697 round-2 review).
+        from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+        token = grant_operator_policy_write()
+        try:
+            return run_approval_mode_command(requested).message
+        finally:
+            reset_operator_policy_write(token)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
