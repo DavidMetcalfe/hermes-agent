@@ -285,3 +285,33 @@ class TestBundledDiscovery:
             )
         assert entry is not None and entry.enabled
         assert len(mgr._middleware.get("tool_execution", [])) > 0
+
+
+class TestManifestKindIsValid:
+    """A bundled manifest with an unknown ``kind`` logs a WARNING at discovery, which poisons any
+    caplog-based test that runs after plugin discovery (CI failure 2026-09-06: kind 'general' was
+    not a valid kind, failing two unrelated warning-count tests). Discovery of a bundled plugin
+    must be warning-free."""
+
+    def test_bundled_discovery_emits_no_warnings(self, _isolate_env, caplog):
+        import logging
+
+        from hermes_cli import plugins as pmod
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr = pmod.PluginManager()
+            mgr.discover_and_load()
+        second_voice_warnings = [
+            r for r in caplog.records
+            if "second_voice" in r.getMessage() and "unknown kind" in r.getMessage()
+        ]
+        assert second_voice_warnings == []
+
+    def test_manifest_kind_is_valid_kind(self, _isolate_env):
+        from hermes_cli.plugins_manifest import _VALID_PLUGIN_KINDS
+
+        import yaml
+        manifest = yaml.safe_load(
+            (Path(__file__).resolve().parents[2] / "plugins" / "second_voice" / "plugin.yaml")
+            .read_text()
+        )
+        assert manifest["kind"] in _VALID_PLUGIN_KINDS
