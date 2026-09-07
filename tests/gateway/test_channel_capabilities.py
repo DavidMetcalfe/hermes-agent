@@ -40,6 +40,7 @@ from gateway.channel_capabilities import (
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.session import (
     SessionSource,
+    _STATIC_PLATFORM_NOTES,
     build_session_context,
     build_session_context_prompt,
 )
@@ -288,3 +289,38 @@ class TestRendererShape:
                 f"{platform_value!r} has actions=(); the renderer must omit the line"
             )
             assert ": \n" not in rendered and "::" not in rendered.replace("Channel Capabilities:", "")
+
+    def test_registry_stays_consistent_with_platform_hints(self):
+        """#104685 review (Enough1122): the registry derives from
+        PLATFORM_HINTS / _STATIC_PLATFORM_NOTES; both sources evolve, so the
+        shared claims need a drift tripwire. Asserts relationships, not
+        snapshots. When one side changes intentionally, update BOTH and this
+        test together."""
+        from agent.prompt_builder import PLATFORM_HINTS
+
+        # SMS: the ~1600-char limit is stated by BOTH sources — if either
+        # drops or changes it, the other must be updated in the same commit.
+        assert "1600" in PLATFORM_HINTS["sms"]
+        assert "1600" in CHANNEL_CAPABILITIES["sms"].limits
+
+        # Discord: both sources must agree markdown-tables are unsupported.
+        assert "tables" in PLATFORM_HINTS["discord"].lower()
+        assert "no tables" in CHANNEL_CAPABILITIES["discord"].style
+
+        # BlueBubbles: _STATIC_PLATFORM_NOTES says "texts, not essays"; the
+        # registry must not contradict it.
+        assert "texts, not essays" in _STATIC_PLATFORM_NOTES[Platform.BLUEBUBBLES]
+        assert "essays" in CHANNEL_CAPABILITIES["bluebubbles"].style
+
+    def test_reactions_claims_are_agent_facing_only(self):
+        """#104685 review (Enough1122): reaction/tool-gated claims are the
+        highest drift risk. Only photon implements the agent-facing
+        send_message(action="react") path (adapter.add_reaction); no other
+        registry entry may claim reactions, and photon's entry must keep the
+        qualified wording."""
+        claiming = {
+            key for key, caps in CHANNEL_CAPABILITIES.items()
+            if any("reaction" in action for action in caps.actions)
+        }
+        assert claiming == {"photon"}, f"unexpected reaction claims: {claiming - {'photon'}}"
+        assert "action='react'" in CHANNEL_CAPABILITIES["photon"].actions[1]
