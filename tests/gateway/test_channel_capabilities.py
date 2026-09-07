@@ -290,6 +290,14 @@ class TestRendererShape:
             )
             assert ": \n" not in rendered and "::" not in rendered.replace("Channel Capabilities:", "")
 
+
+# ---------------------------------------------------------------------------
+# Registry consistency: cross-source drift tripwires (registry vs
+# PLATFORM_HINTS / _STATIC_PLATFORM_NOTES) and capability-claim integrity.
+# ---------------------------------------------------------------------------
+
+
+class TestRegistryConsistency:
     def test_registry_stays_consistent_with_platform_hints(self):
         """#104685 review (Enough1122): the registry derives from
         PLATFORM_HINTS / _STATIC_PLATFORM_NOTES; both sources evolve, so the
@@ -322,5 +330,5 @@ class TestRendererShape:
             key for key, caps in CHANNEL_CAPABILITIES.items()
             if any("reaction" in action for action in caps.actions)
         }
-        assert claiming == {"photon"}, f"unexpected reaction claims: {claiming - {'photon'}}"
-        assert "action='react'" in CHANNEL_CAPABILITIES["photon"].actions[1]
+        assert claiming == {"photon"}, f"expected reaction claims {{'photon'}}, got {claiming}"
+        assert any("action='react'" in action for action in CHANNEL_CAPABILITIES["photon"].actions)
