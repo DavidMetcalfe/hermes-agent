@@ -44,15 +44,16 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     # policy through stderr + SystemExit, and the fail-closed write guard raises RuntimeError on an
     # unparseable config.yaml; capture both for slash-command output instead of terminating the
     # interactive worker.
-    # approval_override=True is the dedicated authorization for the sanctioned
-    # /approvals command — deliberately NOT the generic ``force`` escape hatch,
-    # so an alternate CLI entrypoint reaching the writer cannot weaken the
-    # security policy by passing force (#81108).
+    # This function does NOT stamp the operator grant: the SANCTIONED HUMAN-ACTOR HANDLERS do
+    # (the gateway /approvals handler after its enabled-admin check, and the interactive REPL
+    # /approvals where the human is at the TTY). An in-process caller of THIS function (agent
+    # code) gets no grant, so the writer refuses — there is no importable token to forge
+    # (#104059 class, #104697 review rounds 2-3).
     from hermes_cli.config import set_config_value
     output = StringIO()
     try:
         with redirect_stdout(output), redirect_stderr(output):
-            set_config_value("approvals.mode", requested, approval_override=True)
+            set_config_value("approvals.mode", requested)
     except SystemExit:
         detail = output.getvalue().strip() or "Approval mode is managed and cannot be changed."
         return ApprovalModeResult(False, current, False, detail)
