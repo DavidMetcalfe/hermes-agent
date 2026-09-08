@@ -59,7 +59,7 @@ class _InterimRateGate:
             self._min_interval = max(0.0, float(min_interval_seconds or 0))
         except (TypeError, ValueError):
             self._min_interval = 0.0
-        self._last_emit = 0.0  # monotonic timestamp of the last admitted send; 0 = none yet
+        self._last_emit: Optional[float] = None  # monotonic timestamp of last admitted send
         self._lock = threading.Lock()
 
     @property
@@ -70,9 +70,9 @@ class _InterimRateGate:
         """True if this commentary may send now; records the send when allowed."""
         if not self.enabled:
             return True
-        now = time.monotonic()
         with self._lock:
-            if self._last_emit and (now - self._last_emit) < self._min_interval:
+            now = time.monotonic()
+            if self._last_emit is not None and (now - self._last_emit) < self._min_interval:
                 return False
             self._last_emit = now
             return True

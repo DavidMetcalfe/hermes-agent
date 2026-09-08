@@ -128,6 +128,21 @@ class TestInterimRateGate:
         assert self._gate(-10).enabled is False
         assert self._gate(None).enabled is False
 
+    def test_admission_at_monotonic_zero_still_gates(self, monkeypatch):
+        """A send at monotonic t=0.0 must not leave the gate unset (0.0 is falsy)."""
+        clock = {"t": 0.0}
+        monkeypatch.setattr(time, "monotonic", lambda: clock["t"])
+        gate = self._gate(120)
+        assert gate.allow("at-zero") is True
+        assert gate.allow("within-window") is False
+        clock["t"] += 121
+        assert gate.allow("after-window") is True
+
+    @pytest.mark.parametrize("junk", [".inf", "-.inf", True, False])
+    def test_yaml_edge_values_normalise_to_zero(self, junk):
+        config = {"display": {"interim_assistant_min_interval_seconds": junk}}
+        assert resolve_display_setting(config, "weixin", "interim_assistant_min_interval_seconds") == 0
+
 
 # ---------------------------------------------------------------------------
 # End-to-end: interim_assistant_cb honours the gate

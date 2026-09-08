@@ -151,10 +151,12 @@ def _norm_int(value: Any) -> int:
 
 
 def _norm_nonneg_seconds(value: Any) -> int:
-    """Seconds normaliser: ints pass, junk → 0, negatives clamp to 0 (off)."""
+    """Seconds normaliser: ints pass, junk → 0, negatives clamp to 0 (off); fractional values truncate (1.9 → 1)."""
+    if isinstance(value, bool):
+        return 0
     try:
         return max(0, int(float(value)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return 0
 
 
