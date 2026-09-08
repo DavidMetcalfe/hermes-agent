@@ -1416,6 +1416,14 @@ export function upsertResolvedSession(session: SessionInfo, storedSessionId: str
     const cachedRoot = cached?._lineage_root_id ?? undefined
     const cachedIds = cached?._lineage_ids ?? undefined
     const cachedPinned = cached?.pinned ?? undefined
+    // NOTE (review #105508): every branch below treats a `null` lineage field as
+    // ABSENT — never as a signal to clear the chain — so a raw-shape payload
+    // that omits lineage preserves the cached chain. That is safe only because
+    // compression lineage is APPEND-ONLY: a later chain is always a superset of
+    // an earlier one, never a detachment, so the cached chain is never wrong to
+    // keep. If the backend ever sends an explicit null to MEAN "no lineage",
+    // the preserve-cached fallbacks below would wrongly retain a stale chain —
+    // revisit this block if that invariant changes.
     const rawShape = payloadRoot === undefined && cachedRoot !== undefined
 
     const merged: SessionInfo = {
