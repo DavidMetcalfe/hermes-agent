@@ -62,6 +62,7 @@ class TurnContext:
     disabled_toolsets: Any = None
     log_mode_enabled: bool = False
     interim_assistant_messages_enabled: bool = False
+    interim_assistant_min_interval_seconds: int = 0
     needs_progress_queue: bool = False
     AIAgent: Any = None
     resolve_display_setting: Any = None
