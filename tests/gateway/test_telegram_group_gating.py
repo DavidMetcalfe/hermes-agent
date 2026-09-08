@@ -40,6 +40,7 @@ def _make_adapter(
     guest_mode=None,
     observe_unmentioned_group_messages=None,
     bots_require_mention=None,
+    observe_sibling_bot_messages=None,
     bot_username="hermes_bot",
 ):
     from plugins.platforms.telegram.adapter import TelegramAdapter
@@ -85,6 +86,8 @@ def _make_adapter(
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
     if bots_require_mention is not None:
         extra["bots_require_mention"] = bots_require_mention
+    if observe_sibling_bot_messages is not None:
+        extra["observe_sibling_bot_messages"] = observe_sibling_bot_messages
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -1012,3 +1015,103 @@ def test_sibling_bot_explicit_mention_still_dispatches_and_is_not_observed():
     human = _group_message("hermes, hello")
     assert adapter._should_process_message(human) is True
     assert adapter._should_observe_unmentioned_group_message(human) is False
+
+
+def _sibling_message(text="hello", *, chat_id=-100, from_user_id=111, from_user_name="Alice",
+                     sender_is_bot=False, mention="@other_bot"):
+    """A group message that explicitly addresses a sibling bot (not this one).
+
+    ``sender_is_bot=True`` flips ``from_user.is_bot`` so the bot-sender exclusion
+    guard can be exercised; the sender id must NOT equal this bot's id (999) so the
+    self-message guard stays independent of the sibling-observe path.
+    """
+    entities = _mention_entities(text, [mention]) if mention else []
+    msg = _group_message(
+        text, chat_id=chat_id, from_user_id=from_user_id, from_user_name=from_user_name,
+        entities=entities,
+    )
+    if sender_is_bot:
+        msg.from_user.is_bot = True
+    return msg
+
+
+def _sibling_base_kwargs(**over):
+    """Common kwargs for the sibling-observe invariant tests."""
+    base = dict(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+        observe_sibling_bot_messages=True,
+    )
+    base.update(over)
+    return base
+
+
+def test_sibling_addressed_message_is_observed_when_gated_on():
+    """Invariant 1: a user message addressing a sibling bot is stored context-only."""
+    async def _run():
+        adapter = _make_adapter(**_sibling_base_kwargs())
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        update = SimpleNamespace(
+            update_id=2002,
+            message=_sibling_message("@other_bot hello", from_user_id=111,
+                                     from_user_name="Alice Example"),
+            effective_message=None,
+        )
+        await adapter._handle_text_message(update, SimpleNamespace())
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        session_id, message, skip_db = store.messages[0]
+        assert skip_db is False
+        assert message["role"] == "user"
+        assert message["observed"] is True
+        assert message["message_id"] == "42"
+        assert "[Alice Example|" in message["content"]
+        assert "@other_bot hello" in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_sibling_observe_is_opt_in():
+    """Invariant 2: flag absent/off → sibling messages are NOT observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs(observe_sibling_bot_messages=False))
+    msg = _sibling_message("@other_bot hello")
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_sibling_observe_excludes_bot_senders():
+    """Invariant 3: a bot-authored sibling reply must NOT be observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs())
+    # from_user.id must not equal bot id (999) so _is_own_message stays False;
+    # is_bot=True is the guard under test.
+    msg = _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_sibling_observe_never_dispatches():
+    """Invariant 4: dispatch gate stays closed across all sibling cases."""
+    base = _sibling_base_kwargs()
+    # User sender, flag on.
+    adapter = _make_adapter(**base)
+    assert adapter._should_process_message(
+        _sibling_message("@other_bot hello", from_user_id=111)) is False
+    # Bot sender, flag on.
+    assert adapter._should_process_message(
+        _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)) is False
+    # Flag off.
+    adapter_off = _make_adapter(**_sibling_base_kwargs(observe_sibling_bot_messages=False))
+    assert adapter_off._should_process_message(
+        _sibling_message("@other_bot hello")) is False
+
+
+def test_sibling_observe_requires_observe_allowlist_chat():
+    """Flag on but chat not in the observe allowlist → not observed."""
+    adapter = _make_adapter(**_sibling_base_kwargs())
+    msg = _sibling_message("@other_bot hello", chat_id=-999)
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    assert adapter._should_process_message(msg) is False
