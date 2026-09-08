@@ -266,6 +266,66 @@ def test_observed_group_context_preserves_slash_command_text_for_dispatch():
     assert "observed Telegram group context" in attributed.channel_prompt
 
 
+def test_observe_attribution_gate_passes_when_only_sibling_observe_is_on():
+    """Sibling-observe alone must append the observe prompt even though unmentioned-observe is off."""
+    from gateway.platforms.event import MessageEvent
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=True,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+    assert "observed Telegram group context" in attributed.channel_prompt
+
+
+def test_observe_attribution_gate_skips_when_both_observe_flags_off():
+    """Both observe flags off → no observe prompt appended."""
+    from gateway.platforms.event import MessageEvent
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=False,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+    assert "observed Telegram group context" not in (attributed.channel_prompt or "")
+
+
 def test_shared_group_observe_source_is_authorized_by_group_allowed_chats(monkeypatch):
     from gateway.run import GatewayRunner
 
