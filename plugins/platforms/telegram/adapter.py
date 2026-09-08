@@ -5035,6 +5035,11 @@ class TelegramAdapter(BasePlatformAdapter):
             "observe_unmentioned_group_messages", "TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES", "false",
             "ingest_unmentioned_group_messages")
 
+    def _telegram_observe_sibling_bot_messages(self) -> bool:
+        """Store skipped group messages that explicitly mention a sibling bot (not this one) as context."""
+        return self._extra_bool(
+            "observe_sibling_bot_messages", "TELEGRAM_OBSERVE_SIBLING_BOT_MESSAGES", "false")
+
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
         return self._extra_bool("guest_mode", "TELEGRAM_GUEST_MODE", "false")
@@ -5405,7 +5410,14 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
         chat_id_str = self._chat_id_str(message)
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
-            return False
+            # Sibling-addressed messages are normally dropped. When opted in, observe them
+            # provided the sender is not a bot (bot-authored sibling replies are mirrored
+            # outbound and must not be double-captured here).
+            if not self._telegram_observe_sibling_bot_messages():
+                return False
+            from_user = getattr(message, "from_user", None)
+            if getattr(from_user, "is_bot", False):
+                return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
