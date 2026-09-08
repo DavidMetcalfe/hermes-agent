@@ -3351,7 +3351,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
-                        self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
+                        await asyncio.to_thread(self._mirror_outgoing_response_to_siblings, chat_id, content, metadata)
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
             chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
@@ -3373,7 +3373,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg, used_thread_fallback = outcome
                 message_ids.append(str(msg.message_id))
             await self._retrigger_typing(chat_id, metadata)
-            self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
+            await asyncio.to_thread(self._mirror_outgoing_response_to_siblings, chat_id, content, metadata)
             return SendResult(
                 success=True, message_id=message_ids[0] if message_ids else None,
                 raw_response={
@@ -3461,7 +3461,7 @@ class TelegramAdapter(BasePlatformAdapter):
             rich_result = await self._try_edit_rich(chat_id, message_id, content, metadata=metadata)
             if rich_result is not None:
                 if rich_result.success:
-                    self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
+                    await asyncio.to_thread(self._mirror_outgoing_response_to_siblings, chat_id, content, metadata)
                 return rich_result
         # Pre-flight: over-limit content is split-and-delivered on finalize; mid-stream we truncate instead
         # (splitting moves the edit target to a continuation → infinite duplication loop).
@@ -3495,7 +3495,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
-            self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
+            await asyncio.to_thread(self._mirror_outgoing_response_to_siblings, chat_id, content, metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -5077,16 +5077,16 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         if metadata and (metadata.get("_interim_send") or metadata.get("expect_edits")):
             return
-        # Dedupe guard: consecutive identical (chat_id, content) pairs are skipped so a
-        # streaming-final send + matching finalize edit doesn't double-write a row.
-        dedupe_key = (str(chat_id), content)
+        # Dedupe guard: consecutive identical (chat_id, thread_id, content) pairs
+        # are skipped so a streaming-final send + matching finalize edit doesn't double-write.
+        thread_id = self._metadata_thread_id(metadata)
+        dedupe_key = (str(chat_id), str(thread_id), content)
         if getattr(self, "_mirror_last_written", None) == dedupe_key:
             return
         self._mirror_last_written = dedupe_key
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or str(chat_id) not in allowed:
             return
-        thread_id = self._metadata_thread_id(metadata)
         bot_username = self._current_bot_username() or "unknown"
         text = content if len(content) <= 4000 else content[:4000] + "…"
         row_content = f"[{bot_username}|bot]\n{text}"
@@ -5097,8 +5097,18 @@ class TelegramAdapter(BasePlatformAdapter):
         from hermes_state import SessionDB
         from gateway.session import SessionSource, build_session_key
         from gateway.config import Platform
+        from hermes_cli.profiles import get_active_profile_name
+        try:
+            own_profile = get_active_profile_name()
+        except Exception:
+            own_profile = None
         for profile in profiles:
             try:
+                if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", profile):
+                    logger.warning("[Telegram] Mirror target %r is not a valid profile name; skipping", profile)
+                    continue
+                if own_profile and profile == own_profile:
+                    continue
                 db_path = self._telegram_profiles_root() / profile / "state.db"
                 if not db_path.exists():
                     logger.info("[Telegram] Mirror target profile %s has no state.db; skipping", profile)
@@ -5487,8 +5497,14 @@ class TelegramAdapter(BasePlatformAdapter):
         return None
 
     def _should_observe_unmentioned_group_message(self, message: Message) -> bool:
-        """Return True when a group message should be stored but not dispatched."""
-        if self._is_own_message(message) or not self._telegram_observe_unmentioned_group_messages() or not self._is_group_chat(message):
+        """Return True when a group message should be stored but not dispatched.
+
+        Semantics (standalone sibling gate):
+        - observe_unmentioned only: ordinary chatter observed, sibling msgs dropped.
+        - observe_sibling only: sibling msgs observed, ordinary chatter dropped.
+        - both: both observed; neither: none observed.
+        """
+        if self._is_own_message(message) or not self._is_group_chat(message):
             return False
         if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
             return False
@@ -5502,6 +5518,10 @@ class TelegramAdapter(BasePlatformAdapter):
             from_user = getattr(message, "from_user", None)
             if getattr(from_user, "is_bot", False):
                 return False
+        elif not self._telegram_observe_unmentioned_group_messages():
+            # Non-sibling messages still require the unmentioned flag; sibling-only mode
+            # must NOT start observing ordinary unmentioned chatter.
+            return False
         # Observed context is shared at chat/topic scope, so require an explicit chat allowlist.
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:

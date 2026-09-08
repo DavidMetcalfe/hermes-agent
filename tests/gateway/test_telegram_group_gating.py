@@ -1277,9 +1277,11 @@ def test_send_wiring_whitespace_does_not_mirror(tmp_path, monkeypatch):
 def test_mirror_namespace_adopts_profile(tmp_path):
     """T8: mirror row lands with ``agent:<profile>:`` session key namespace (profile=profile,
     not profile=None). Verified at the DB row level: SELECT session_key FROM sessions WHERE id=…
-    must start with ``agent:sknerus:``.
+    must equal the full expected key ``agent:sknerus:telegram:group:-100123``.
     """
     from hermes_state import SessionDB
+    from gateway.session import SessionSource, build_session_key
+    from gateway.config import Platform
     db_path, db = _sibling_state_db(tmp_path)
     try:
         adapter = _make_adapter(
@@ -1296,6 +1298,13 @@ def test_mirror_namespace_adopts_profile(tmp_path):
         assert row is not None
         session_key = row["session_key"]
         assert session_key.startswith("agent:sknerus:")
+        # Byte-equality with a freshly built key, not just a prefix.
+        source = SessionSource(
+            platform=Platform.TELEGRAM, chat_id="-100123", chat_type="group",
+            thread_id=None, user_id=None)
+        expected = build_session_key(source, profile="sknerus")
+        assert session_key == expected
+        assert session_key == "agent:sknerus:telegram:group:-100123"
     finally:
         db.close()
 
@@ -1369,4 +1378,70 @@ def test_mirror_dedupe_consecutive_identical(tmp_path):
         assert "different text" in msgs[1]["content"]
     finally:
         db.close()
+
+
+# ---------------------------------------------------------------------------
+# Cross-vendor review fixes: edit_message non-finalize no-mirror, sibling-only flag
+# ---------------------------------------------------------------------------
+
+def test_edit_message_non_finalize_does_not_mirror(tmp_path):
+    """edit_message(..., finalize=False) must NOT mirror — early return before mirror call.
+
+    Pins the early-return ordering a reviewer misread: finalize=False bails out
+    of edit_message before the mirror call site is ever reached.
+    """
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._bot = SimpleNamespace(
+            id=999, username="hermes_bot",
+            edit_message_text=AsyncMock(return_value=SimpleNamespace()),
+        )
+        adapter._rich_messages_enabled = False
+        adapter._last_overflow_preview = {}
+        adapter._telegram_profiles_root = lambda: tmp_path
+
+        result = asyncio.run(
+            adapter.edit_message("-100123", "123", "partial draft",
+                                 finalize=False, metadata=None))
+        assert result.success is True
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+        msgs = db.get_messages(session_id) if session_id else []
+        assert len(msgs) == 0
+    finally:
+        db.close()
+
+
+def test_sibling_only_flag_observes_sibling_without_unmentioned(tmp_path):
+    """observe_sibling only (unmentioned off) → sibling msgs observed, ordinary chatter not.
+
+    Pins the standalone-gate semantics from FIX 1: with
+    observe_unmentioned_group_messages=False and observe_sibling_bot_messages=True,
+    a sibling-addressed user message is observed, but an ordinary unmentioned
+    user message (no bot mention) is NOT.
+    """
+    adapter = _make_adapter(
+        require_mention=True,
+        exclusive_bot_mentions=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=False,
+        observe_sibling_bot_messages=True,
+    )
+
+    # Sibling-addressed message (explicitly mentions another bot, excludes self).
+    sibling_msg = _sibling_message(
+        "@other_bot hello", from_user_id=111, from_user_name="Alice Example")
+    assert adapter._should_observe_unmentioned_group_message(sibling_msg) is True
+
+    # Ordinary unmentioned message: no bot mention → must NOT be observed.
+    ordinary_msg = _group_message("side chatter", chat_id=-100)
+    assert adapter._should_observe_unmentioned_group_message(ordinary_msg) is False
+
 

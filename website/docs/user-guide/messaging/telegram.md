@@ -190,13 +190,13 @@ telegram:
     - "research"
 ```
 
-With `require_mention: true` and `exclusive_bot_mentions: true` unchanged, messages the user addresses to *another* bot are stored as attributed observed context in this bot's shared group session instead of being dropped — they never wake this bot. Sibling observation rides the same capture pipeline as unmentioned chatter, so keep `observe_unmentioned_group_messages: true` enabled alongside it. The same allowlist rules apply (`group_allowed_chats` ∩ `allowed_chats`): only chats allowed for both observation and response participate. As with unmentioned-group-observe, this still requires Telegram to deliver the sibling-addressed messages, so disable BotFather privacy mode or make the bot a group admin.
+With `require_mention: true` and `exclusive_bot_mentions: true` unchanged, messages the user addresses to *another* bot are stored as attributed observed context in this bot's shared group session instead of being dropped — they never wake this bot. This flag works standalone — sibling-addressed messages are observed even with `observe_unmentioned_group_messages` off — but the two combine cleanly when both are enabled. The same allowlist rules apply (`group_allowed_chats` ∩ `allowed_chats`): only chats allowed for both observation and response participate. As with unmentioned-group-observe, this still requires Telegram to deliver the sibling-addressed messages, so disable BotFather privacy mode or make the bot a group admin.
 
 ```bash
 TELEGRAM_OBSERVE_SIBLING_BOT_MESSAGES=true
 ```
 
-After this bot sends a final response to an allowlisted group, `mirror_final_responses_to_profiles` writes that response as attributed observed context into each listed sibling profile's own state database, so when the user later tags that sibling it sees this bot's answer in its observed-context block. Profile names are the directory names under `~/.hermes/profiles/`. Streaming draft frames, mid-turn status messages, and non-final edits are never mirrored — only the final response.
+After this bot sends a final response to an allowlisted group, `mirror_final_responses_to_profiles` writes that response as attributed observed context into each listed sibling profile's own state database, so when the user later tags that sibling it sees this bot's answer in its observed-context block. Profile names are the directory names under `~/.hermes/profiles/`. Streaming draft frames, mid-turn status messages, and non-final edits are never mirrored — only the final response. Profiles whose `state.db` does not exist are skipped with a log line, and listing the bot's own profile in the mirror list is a no-op.
 
 ```bash
 TELEGRAM_MIRROR_FINAL_RESPONSES_TO_PROFILES=research
