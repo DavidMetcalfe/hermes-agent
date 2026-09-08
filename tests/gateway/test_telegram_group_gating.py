@@ -1207,3 +1207,106 @@ def test_send_wiring_whitespace_does_not_mirror(tmp_path, monkeypatch):
     assert result.success is True
     assert result.message_id is None
     assert len(called_with) == 0
+
+
+# ---------------------------------------------------------------------------
+# Task 2 review fixes: namespace, expect_edits gate, finalize-edit mirror, dedupe.
+# ---------------------------------------------------------------------------
+
+
+def test_mirror_namespace_adopts_profile(tmp_path):
+    """T8: mirror row lands with ``agent:<profile>:`` session key namespace (profile=profile,
+    not profile=None). Verified at the DB row level: SELECT session_key FROM sessions WHERE id=…
+    must start with ``agent:sknerus:``.
+    """
+    from hermes_state import SessionDB
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "Final answer", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        row = db._read_one("SELECT session_key FROM sessions WHERE id = ?", (session_id,))
+        assert row is not None
+        session_key = row["session_key"]
+        assert session_key.startswith("agent:sknerus:")
+    finally:
+        db.close()
+
+
+def test_mirror_skips_expect_edits(tmp_path):
+    """T9: metadata with ``expect_edits=True`` is a streaming draft, not a final — no row written."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings(
+            "-100123", "draft chunk", {"expect_edits": True})
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is None
+    finally:
+        db.close()
+
+
+def test_edit_message_finalize_mirrors(tmp_path):
+    """T10: calling ``edit_message(..., finalize=True)`` writes a row to the sibling DB."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._bot = SimpleNamespace(
+            id=999, username="hermes_bot",
+            edit_message_text=AsyncMock(return_value=SimpleNamespace()),
+        )
+        adapter._rich_messages_enabled = False
+        adapter._last_overflow_preview = {}
+        adapter._telegram_profiles_root = lambda: tmp_path
+        result = asyncio.run(adapter.edit_message("-100123", "123", "final text", finalize=True, metadata=None))
+        assert result.success is True
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 1
+        assert "final text" in msgs[0]["content"]
+    finally:
+        db.close()
+
+
+def test_mirror_dedupe_consecutive_identical(tmp_path):
+    """T11: two mirror calls with identical (chat_id, content) → 1 row; differing content → 2nd row."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"],
+            group_allowed_chats=["-100123"],
+            mirror_profiles=["sknerus"],
+        )
+        adapter._telegram_profiles_root = lambda: tmp_path
+        adapter._mirror_outgoing_response_to_siblings("-100123", "same text", None)
+        adapter._mirror_outgoing_response_to_siblings("-100123", "same text", None)
+        adapter._mirror_outgoing_response_to_siblings("-100123", "different text", None)
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 2
+        assert "same text" in msgs[0]["content"]
+        assert "different text" in msgs[1]["content"]
+    finally:
+        db.close()
+

@@ -3460,6 +3460,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if finalize and self._rich_eligible(content):
             rich_result = await self._try_edit_rich(chat_id, message_id, content, metadata=metadata)
             if rich_result is not None:
+                if rich_result.success:
+                    self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
                 return rich_result
         # Pre-flight: over-limit content is split-and-delivered on finalize; mid-stream we truncate instead
         # (splitting moves the edit target to a continuation → infinite duplication loop).
@@ -3493,6 +3495,7 @@ class TelegramAdapter(BasePlatformAdapter):
             await self._edit_markdown_or_plain(
                 chat_id, message_id, self.format_message(content), _strip_mdv2(content) if content else content,
                 "[%s] MarkdownV2 edit failed, falling back to plain text: %s")
+            self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
             err_str = str(e).lower()
@@ -5049,12 +5052,7 @@ class TelegramAdapter(BasePlatformAdapter):
         final response sent to an allowlisted group, so the sibling sees this bot's answers as
         observed context (Telegram does not deliver bot-authored messages to other bots).
         """
-        raw = self.config.extra.get("mirror_final_responses_to_profiles")
-        if raw is None:
-            raw = _scoped_gate_env("TELEGRAM_MIRROR_FINAL_RESPONSES_TO_PROFILES")
-        if isinstance(raw, list):
-            return [str(part).strip() for part in raw if str(part).strip()]
-        return [part.strip() for part in str(raw).split(",") if part.strip()]
+        return sorted(self._extra_str_set("mirror_final_responses_to_profiles", "TELEGRAM_MIRROR_FINAL_RESPONSES_TO_PROFILES"))
 
     def _telegram_profiles_root(self) -> _Path:
         """Root directory of named profiles (``<home>/profiles``); indirection so tests can patch."""
@@ -5077,8 +5075,14 @@ class TelegramAdapter(BasePlatformAdapter):
         profiles = self._telegram_mirror_profiles()
         if not profiles or not content or not content.strip():
             return
-        if metadata and metadata.get("_interim_send"):
+        if metadata and (metadata.get("_interim_send") or metadata.get("expect_edits")):
             return
+        # Dedupe guard: consecutive identical (chat_id, content) pairs are skipped so a
+        # streaming-final send + matching finalize edit doesn't double-write a row.
+        dedupe_key = (str(chat_id), content)
+        if getattr(self, "_mirror_last_written", None) == dedupe_key:
+            return
+        self._mirror_last_written = dedupe_key
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or str(chat_id) not in allowed:
             return
@@ -5104,7 +5108,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     shared = SessionSource(
                         platform=Platform.TELEGRAM, chat_id=str(chat_id), chat_type="group",
                         thread_id=thread_id, user_id=None, user_name=None)
-                    key = build_session_key(shared, profile=None)
+                    key = build_session_key(shared, profile=profile)
                     session_id = db.find_session_by_origin(
                         platform="telegram", chat_id=str(chat_id), thread_id=thread_id, user_id=None)
                     if not session_id:
