@@ -67,7 +67,12 @@ class _InterimRateGate:
         return self._min_interval > 0
 
     def allow(self, text: Any) -> bool:
-        """True if this commentary may send now; records the send when allowed."""
+        """True if this commentary may send now; records the send when allowed.
+
+        ``text`` is accepted but not consumed: every message routed here is
+        non-urgent by construction (approvals, errors and finals never reach
+        this gate), so urgency has no bearing on admission.
+        """
         if not self.enabled:
             return True
         with self._lock:
