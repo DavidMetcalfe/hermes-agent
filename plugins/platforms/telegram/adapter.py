@@ -3351,6 +3351,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 rich_result = await self._try_send_rich(chat_id, content, reply_to, metadata)
                 if rich_result is not None:
                     if rich_result.success:
+                        self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
                         await self._retrigger_typing(chat_id, metadata)
                     return rich_result
             chunks = self.truncate_message(self.format_message(content), self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)
@@ -3372,6 +3373,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 msg, used_thread_fallback = outcome
                 message_ids.append(str(msg.message_id))
             await self._retrigger_typing(chat_id, metadata)
+            self._mirror_outgoing_response_to_siblings(chat_id, content, metadata)
             return SendResult(
                 success=True, message_id=message_ids[0] if message_ids else None,
                 raw_response={
@@ -5039,6 +5041,84 @@ class TelegramAdapter(BasePlatformAdapter):
         """Store skipped group messages that explicitly mention a sibling bot (not this one) as context."""
         return self._extra_bool(
             "observe_sibling_bot_messages", "TELEGRAM_OBSERVE_SIBLING_BOT_MESSAGES", "false")
+
+    def _telegram_mirror_profiles(self) -> list[str]:
+        """Sibling profile names to mirror this bot's outbound final responses into (Issue #44881).
+
+        Each named sibling profile's ``state.db`` receives a context-only observed row for every
+        final response sent to an allowlisted group, so the sibling sees this bot's answers as
+        observed context (Telegram does not deliver bot-authored messages to other bots).
+        """
+        raw = self.config.extra.get("mirror_final_responses_to_profiles")
+        if raw is None:
+            raw = _scoped_gate_env("TELEGRAM_MIRROR_FINAL_RESPONSES_TO_PROFILES")
+        if isinstance(raw, list):
+            return [str(part).strip() for part in raw if str(part).strip()]
+        return [part.strip() for part in str(raw).split(",") if part.strip()]
+
+    def _telegram_profiles_root(self) -> _Path:
+        """Root directory of named profiles (``<home>/profiles``); indirection so tests can patch."""
+        from hermes_cli.profiles import _get_profiles_root
+        return _get_profiles_root()
+
+    def _mirror_outgoing_response_to_siblings(self, chat_id: str, content: str, metadata: Optional[dict]) -> None:
+        """Mirror a final outbound response into each configured sibling profile's state DB.
+
+        Telegram does not deliver bot-authored messages to other bots in the same
+        group, so sibling profiles never see this bot's answers through the normal
+        inbound path. This writes a single observed, context-only ``user`` row into
+        each sibling's ``state.db`` so the sibling's gateway can later adopt the
+        shared group session and surface this bot's answer as observed context.
+
+        Attribution lives in the ``content`` string (``[bot|bot]\\n…``) — the session
+        schema has no ``mirror_source`` column, so per-append_message's known-columns
+        binding any extra key would be silently dropped.
+        """
+        profiles = self._telegram_mirror_profiles()
+        if not profiles or not content or not content.strip():
+            return
+        if metadata and metadata.get("_interim_send"):
+            return
+        allowed = self._telegram_observe_allowed_chats()
+        if not allowed or str(chat_id) not in allowed:
+            return
+        thread_id = self._metadata_thread_id(metadata)
+        bot_username = self._current_bot_username() or "unknown"
+        text = content if len(content) <= 4000 else content[:4000] + "…"
+        row_content = f"[{bot_username}|bot]\n{text}"
+        # Imports live inside the method per adapter convention (tests build adapters
+        # via object.__new__ with no __init__, so module-level imports would also
+        # need guarding). datetime/timezone are already module-level.
+        import uuid
+        from hermes_state import SessionDB
+        from gateway.session import SessionSource, build_session_key
+        from gateway.config import Platform
+        for profile in profiles:
+            try:
+                db_path = self._telegram_profiles_root() / profile / "state.db"
+                if not db_path.exists():
+                    logger.info("[Telegram] Mirror target profile %s has no state.db; skipping", profile)
+                    continue
+                db = SessionDB(db_path=db_path)
+                try:
+                    shared = SessionSource(
+                        platform=Platform.TELEGRAM, chat_id=str(chat_id), chat_type="group",
+                        thread_id=thread_id, user_id=None, user_name=None)
+                    key = build_session_key(shared, profile=None)
+                    session_id = db.find_session_by_origin(
+                        platform="telegram", chat_id=str(chat_id), thread_id=thread_id, user_id=None)
+                    if not session_id:
+                        session_id = datetime.now(tz=timezone.utc).strftime("%Y%m%d_%H%M%S") + "_" + uuid.uuid4().hex[:8]
+                        db.create_session(
+                            session_id, "telegram", session_key=key, chat_id=str(chat_id),
+                            chat_type="group", thread_id=thread_id, user_id=None)
+                    db.append_message(
+                        session_id, "user", content=row_content, observed=True,
+                        timestamp=datetime.now(tz=timezone.utc).isoformat())
+                finally:
+                    db.close()
+            except Exception as exc:
+                logger.warning("[Telegram] Mirror to sibling profile %s failed: %s", profile, exc)
 
     def _telegram_guest_mode(self) -> bool:
         """Return whether non-allowlisted groups may trigger via direct @mention."""
