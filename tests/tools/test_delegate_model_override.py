@@ -11,10 +11,15 @@ Precedence: per-task override > delegation config > parent inheritance.
 Run with: python -m pytest tests/tools/test_delegate_model_override.py -v
 """
 
+import copy
 import json
+import socket
 import threading
 import unittest
 from unittest.mock import MagicMock, patch
+
+import pytest
+import yaml
 
 from tools.delegate_tool import (
     DELEGATE_TASK_SCHEMA,
@@ -407,6 +412,113 @@ class TestPerDispatchOverrideFailureIsolation(unittest.TestCase):
         self.assertEqual(kwargs["model"], "override-model")
         self.assertEqual(kwargs["provider"], "override-prov")
         mock_save.assert_not_called()
+
+
+@pytest.fixture
+def direct_route(tmp_path, monkeypatch):
+    """Real config and provider resolution; only the child runtime is replaced."""
+    from hermes_cli.config import load_config_readonly
+    from tools.registry import registry
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_IGNORE_USER_CONFIG", raising=False)
+    config = {
+        "delegation": {
+            "model": "configured-model",
+            "provider": "custom:route-a",
+            "base_url": "https://direct.invalid/v1",
+            "api_key": "direct-fixture-key",
+            "api_mode": "anthropic_messages",
+            "request_overrides": {"extra_body": {"route": "direct"}},
+            "max_spawn_depth": 2,
+        },
+        "providers": {
+            name: {
+                "base_url": f"https://{name}.invalid/v1",
+                "api_key": f"{name}-fixture-key",
+                "extra_body": {"route": name},
+            }
+            for name in ("route-a", "route-b")
+        },
+    }
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(config), encoding="utf-8")
+    before = path.read_bytes()
+    cached = load_config_readonly()["delegation"]
+    original = copy.deepcopy(cached)
+    parent = _make_mock_parent(depth=1)  # Registry waits for nested delegates.
+    parent._credential_pool = None
+    parent._current_task_id = None
+    parent.session_id = "fixture-parent"
+
+    def no_network(*args, **kwargs):
+        raise AssertionError("Provider calls are forbidden in routing tests")
+
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    with patch("run_agent.AIAgent") as agent:
+
+        def child(**kwargs):
+            instance = MagicMock()
+            instance.model = kwargs["model"]
+            instance.session_id = "fixture-child"
+            instance._credential_pool = None
+            instance.run_conversation.return_value = {
+                "final_response": "ok", "completed": True, "api_calls": 0,
+            }
+            return instance
+
+        agent.side_effect = child
+        yield registry, parent, agent, cached, tmp_path
+    assert path.read_bytes() == before
+    assert cached == original
+
+
+@pytest.mark.parametrize("provider", ["custom:route-b", "custom:route-a", ""])
+@pytest.mark.parametrize("model", ["task-model", None])
+def test_real_resolver_keeps_each_task_route_coherent(direct_route, provider, model):
+    registry, parent, agent, cfg, _ = direct_route
+    result = json.loads(registry.dispatch(
+        "delegate_task",
+        {"tasks": [
+            {"goal": "Check the overridden route", "model": model, "provider": provider},
+            {"goal": "Check the inherited route"},
+        ]},
+        parent_agent=parent,
+    ))
+    assert "error" not in result, result
+    assert len(agent.call_args_list) == 2
+    overridden, inherited = [call.kwargs for call in agent.call_args_list]
+    assert overridden["model"] == (model or cfg["model"])
+    if provider == "custom:route-b":
+        assert overridden["provider"] == provider
+        assert overridden["base_url"] == "https://route-b.invalid/v1"
+        assert overridden["api_key"] == "route-b-fixture-key"
+        assert overridden["api_mode"] == "chat_completions"
+        assert overridden["request_overrides"] == {"extra_body": {"route": "route-b"}}
+    else:
+        for key in ("base_url", "api_key", "api_mode", "request_overrides"):
+            assert overridden[key] == cfg[key]
+    for key in ("model", "base_url", "api_key", "api_mode", "request_overrides"):
+        assert inherited[key] == cfg[key]
+
+
+def test_real_resolver_rejects_invalid_override_before_any_child(direct_route):
+    registry, parent, agent, _, home = direct_route
+    result = json.loads(registry.dispatch(
+        "delegate_task",
+        {"tasks": [
+            {"goal": "Resolve a valid provider", "provider": "custom:route-b"},
+            {"goal": "Reject an invalid provider", "provider": "custom:missing-fixture-provider"},
+        ]},
+        parent_agent=parent,
+    ))
+    assert "error" in result, result
+    assert "Task 1" in result["error"]
+    assert "missing-fixture-provider" in result["error"]
+    agent.assert_not_called()
+    assert parent._active_children == []
+    assert not list(home.glob("cache/delegation/live/*"))
 
 
 if __name__ == "__main__":

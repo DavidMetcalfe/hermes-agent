@@ -501,7 +501,17 @@ def delegate_task(
             if task_model_override:
                 per_task_cfg["model"] = task_model_override
             if task_provider_override:
-                per_task_cfg["provider"] = task_provider_override
+                task_provider = task_provider_override.strip()
+                # Compare the override and configured provider tokens symmetrically.
+                # A provider switch must not reuse the previous route's endpoint,
+                # credentials or request personality; model-only and same-provider
+                # overrides still honor an explicitly configured direct endpoint.
+                # (.strip() here keeps the guard self-contained; task_provider_override
+                # is already stripped at the extraction above.)
+                if task_provider.lower() != str(routing_cfg.get("provider") or "").strip().lower():
+                    for key in ("base_url", "api_key", "api_mode", "request_overrides"):
+                        per_task_cfg.pop(key, None)
+                per_task_cfg["provider"] = task_provider
             try:
                 resolved_task_creds.append(
                     _resolve_delegation_credentials(per_task_cfg, parent_agent)
