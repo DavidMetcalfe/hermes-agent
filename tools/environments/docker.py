@@ -513,7 +513,10 @@ class DockerEnvironment(BaseEnvironment):
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
         shared_container_key: str = "",
-        snap_compat: bool = False):
+        snap_compat: bool = False,
+        scope: str = "shared",
+        session_retention: str = "stop_on_session_end",
+        session_ttl_seconds: int = 3600):
         if cwd == "~":
             cwd = "/root"
         super().__init__(cwd=cwd, timeout=timeout)
@@ -562,6 +565,10 @@ class DockerEnvironment(BaseEnvironment):
         security_args = _build_security_args(
             run_as_host_user and bool(user_args), run_exec=image_uses_s6_init, snap_compat=snap_compat)
         self._snap_compat = snap_compat
+        # Config surface for #46041 session-scoped containers; consumed by session-scope routing later in this PR.
+        self._scope = scope
+        self._session_retention = session_retention
+        self._session_ttl_seconds = session_ttl_seconds
         if snap_compat:
             logger.warning(
                 "docker_snap_compat: running without --init and no-new-privileges (snap Docker under AppArmor)")
