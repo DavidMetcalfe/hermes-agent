@@ -147,7 +147,7 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     """Clean up environments that have been inactive for longer than lifetime_seconds."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _last_activity, _session_close_keys, _session_close_keys_lock,
     )
     current_time = time.time()
 
@@ -194,6 +194,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         with _creation_locks_lock:
             for t in stale:
                 _creation_locks.pop(t, None)
+        # Also drop the session-close registry entry the reaper would otherwise
+        # leave behind (bounded, but a slow leak across many sessions in a
+        # long-lived gateway process) — #46041.
+        with _session_close_keys_lock:
+            for t in stale:
+                _session_close_keys.pop(t, None)
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)

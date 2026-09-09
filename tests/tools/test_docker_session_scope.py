@@ -482,6 +482,30 @@ def test_idle_reaper_never_idles_stop_retention_envs(monkeypatch):
     assert get_active_env("session:keep_running") is not None
 
 
+def test_idle_reaper_drops_session_close_key_entry(monkeypatch):
+    """Review fix (#46041): the reaper pops _active_environments/_last_activity
+    directly, so it must ALSO drop the matching _session_close_keys entry —
+    otherwise the registry retains one small dict per reaped session in a
+    long-lived gateway process. A surviving (non-stale) env keeps its entry."""
+    def _fake_teardown(env_, task_id, *, force_remove=False, done_msg=""):
+        pass
+    monkeypatch.setattr("tools.terminal_tool_lifecycle._teardown_env", _fake_teardown)
+    _seed_env("session:reaped", _FakeSessionEnv("stop_on_session_end", 3600), age_seconds=400)
+    _seed_env("session:alive", _FakeSessionEnv("stop_on_session_end", 3600), age_seconds=100)
+    with terminal_tool._session_close_keys_lock:
+        terminal_tool._session_close_keys["session:reaped"] = {
+            "session_key": "reaped", "session_id": "20260909_a"}
+        terminal_tool._session_close_keys["session:alive"] = {
+            "session_key": "alive", "session_id": "20260909_b"}
+    _cleanup_inactive_envs(lifetime_seconds=300)
+    assert get_active_env("session:reaped") is None
+    assert get_active_env("session:alive") is not None
+    with terminal_tool._session_close_keys_lock:
+        assert "session:reaped" not in terminal_tool._session_close_keys
+        assert terminal_tool._session_close_keys["session:alive"] == {
+            "session_key": "alive", "session_id": "20260909_b"}
+
+
 def test_idle_reaper_ephemeral_envs_still_reaped(monkeypatch):
     """BLOCKER regression (#46041 review): ephemeral per-session envs (_session_scoped=True,
     _scope=shared) must keep the LEGACY idle contract — reaped after lifetime_seconds."""
