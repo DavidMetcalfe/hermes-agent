@@ -330,15 +330,15 @@ def _parent_finalization_lock(parent_agent) -> threading.RLock:
     return lock
 
 def _notify_memory_manager(results, task_list, child_by_index, parent_agent) -> None:
+    memory = getattr(parent_agent, "_memory_manager", None) if parent_agent else None
+    if not memory:
+        return
     from tools.delegate_tool import _load_config
     try:
         if is_truthy_value(_load_config().get("suppress_memory_notify")):
             return  # delegation.suppress_memory_notify: ephemeral child results opted out of provider persistence
     except (TypeError, ValueError):
         pass
-    memory = getattr(parent_agent, "_memory_manager", None) if parent_agent else None
-    if not memory:
-        return
     for entry in results:
         try:
             task_index = entry.get("task_index", -1)

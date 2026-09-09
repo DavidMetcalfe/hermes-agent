@@ -75,11 +75,14 @@ def test_missing_delegation_key_still_notifies():
 
 
 def test_notify_loop_isolates_raising_provider():
-    """A provider raising inside on_delegation must not break result processing."""
+    """A provider raising inside on_delegation must not break result processing,
+    and the hook is still invoked (isolation, not skipping)."""
     parent = _make_parent()
     parent._memory_manager.on_delegation.side_effect = RuntimeError("provider down")
 
     _notify_with_config(parent, [_make_result(0)], {})
+
+    parent._memory_manager.on_delegation.assert_called_once()
 
 
 def test_malformed_config_fails_open():
