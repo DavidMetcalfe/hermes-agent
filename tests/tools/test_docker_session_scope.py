@@ -210,7 +210,8 @@ def _build(cc, task_id):
         task_id=task_id, ssh_config=None, host_cwd=None)
 
 
-def test_builder_session_scope_passes_retention(recording_env):
+def test_builder_session_scope_passes_retention(monkeypatch, recording_env):
+    _pin_session(monkeypatch, scope="session", persistent="true", session_key="abc")
     env = _build(_builder_cc(), "session:abc")
     assert env._scope == "session"
     assert env._session_retention == "stop_on_session_end"
@@ -242,6 +243,25 @@ def test_builder_session_scope_config_with_ephemeral_env_forces_shared(monkeypat
     env = _build(_builder_cc(container_persistent=False), "session:abc")
     assert env._scope == "shared"
     assert env._persist_across_processes is False
+
+
+def test_builder_scope_never_leaks_to_default_container(monkeypatch, recording_env):
+    """BLOCKER regression (#46041 review): task_id=default (CLI/shared container) must get
+    scope=shared even with docker_container_scope: session in the config — the passthrough
+    table must not hand scope=session to the ctor."""
+    _pin_session(monkeypatch, scope="session", persistent="true", session_key=None)
+    env = _build(_builder_cc(), "default")
+    assert env._scope == "shared"
+    assert env._session_scoped is False
+
+
+def test_builder_scope_never_leaks_to_rl_override_sandboxes(monkeypatch, recording_env):
+    """BLOCKER regression: RL/benchmark override sandboxes keep the shared contract."""
+    _pin_session(monkeypatch, scope="session", persistent="true", session_key="abc")
+    terminal_tool.register_task_env_overrides("rl-task-1", {"docker_image": "rl-img"})
+    env = _build(_builder_cc(), "rl-task-1")
+    assert env._scope == "shared"
+    assert env._session_scoped is False
 
 
 def test_builder_shared_default_untouched(recording_env):
@@ -402,6 +422,7 @@ def test_reaper_ignores_containers_without_label(monkeypatch):
 
 class _FakeSessionEnv:
     def __init__(self, retention, ttl, scoped=True):
+        self._scope = "session" if scoped else "shared"
         self._session_scoped = scoped
         self._session_retention = retention
         self._session_ttl_seconds = ttl
@@ -430,8 +451,23 @@ def test_idle_reaper_ttl_cutoff_for_idle_ttl(monkeypatch):
     assert get_active_env("session:old") is None  # reaped
 
 
+def test_idle_reaper_stops_stop_retention_envs_after_lifetime(monkeypatch):
+    """stop-retention envs idle out after lifetime_seconds but are torn down NON-forced:
+    cleanup() applies stop-only (resumable), the registry stays bounded."""
+    torn_down = []
+
+    def _fake_teardown(env_, task_id, *, force_remove=False, done_msg=""):
+        torn_down.append((task_id, force_remove))
+
+    monkeypatch.setattr("tools.terminal_tool_lifecycle._teardown_env", _fake_teardown)
+    _seed_env("session:stop", _FakeSessionEnv("stop_on_session_end", 3600), age_seconds=400)
+    _cleanup_inactive_envs(lifetime_seconds=300)
+    assert torn_down == [("session:stop", False)], "stale stop-retention env is torn down (non-forced)"
+    assert get_active_env("session:stop") is None
+
+
 def test_idle_reaper_never_idles_stop_retention_envs(monkeypatch):
-    """stop/keep envs answer to the session, not the idle clock."""
+    """stop/keep envs inside the idle window are untouched (bg processes survive)."""
     torn_down = []
 
     def _fake_teardown(env_, task_id, *, force_remove=False, done_msg=""):
@@ -439,11 +475,26 @@ def test_idle_reaper_never_idles_stop_retention_envs(monkeypatch):
 
     monkeypatch.setattr("tools.terminal_tool_lifecycle._teardown_env", _fake_teardown)
     for retention in ("stop_on_session_end", "keep_running"):
-        _seed_env(f"session:{retention}", _FakeSessionEnv(retention, 3600), age_seconds=10_000)
+        _seed_env(f"session:{retention}", _FakeSessionEnv(retention, 3600), age_seconds=100)
     _cleanup_inactive_envs(lifetime_seconds=300)
-    assert torn_down == [], "session-retention envs must survive the idle sweep"
+    assert torn_down == [], "idle-but-open session envs must survive the sweep"
     assert get_active_env("session:stop_on_session_end") is not None
     assert get_active_env("session:keep_running") is not None
+
+
+def test_idle_reaper_ephemeral_envs_still_reaped(monkeypatch):
+    """BLOCKER regression (#46041 review): ephemeral per-session envs (_session_scoped=True,
+    _scope=shared) must keep the LEGACY idle contract — reaped after lifetime_seconds."""
+    torn_down = []
+
+    def _fake_teardown(env_, task_id, *, force_remove=False, done_msg=""):
+        torn_down.append((task_id, force_remove))
+
+    monkeypatch.setattr("tools.terminal_tool_lifecycle._teardown_env", _fake_teardown)
+    _seed_env("session:ephemeral", _FakeSessionEnv("stop_on_session_end", 3600, scoped=False),
+              age_seconds=400)
+    _cleanup_inactive_envs(lifetime_seconds=300)
+    assert torn_down == [("session:ephemeral", False)], "ephemeral envs are not exempt from idling"
 
 
 def test_idle_reaper_non_session_envs_unchanged(monkeypatch):

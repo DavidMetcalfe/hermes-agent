@@ -392,6 +392,7 @@ def _cli_config_defaults():
             "docker_shared_container_key": "",
             "docker_container_scope": "shared",
             "docker_session_container_retention": "stop_on_session_end",
+            "docker_session_container_ttl_seconds": 3600,
         },
         "browser": {
             "inactivity_timeout": 120, "record_sessions": False, "engine": "auto",  # auto (Chrome) | lightpanda | chrome

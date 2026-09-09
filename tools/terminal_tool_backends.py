@@ -51,9 +51,6 @@ _DOCKER_KWARGS = (
     ("extra_args", "docker_extra_args", []), ("persist_across_processes", "docker_persist_across_processes", True),
     ("shared_container_key", "docker_shared_container_key", ""), ("shm_size", "docker_shm_size", "1g"),
     ("snap_compat", "docker_snap_compat", False),
-    ("scope", "docker_container_scope", "shared"),
-    ("session_retention", "docker_session_container_retention", "stop_on_session_end"),
-    ("session_ttl_seconds", "docker_session_container_ttl_seconds", 3600),
 )
 
 
@@ -121,10 +118,13 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
     # persistent per-session mode: cross-process reuse stays ON for stop/keep/idle_ttl retention
     # (a stopped container must be reattachable from a later process); only remove_on_session_end
     # drops to the ephemeral contract. Ephemeral isolation (container_persistent: false) keeps the
-    # unconditional persist=False.
+    # unconditional persist=False. The scope/retention kwargs are set ONLY in the session-scope
+    # branch below — never via the passthrough — so "default"/RL-shared containers can never
+    # inherit scope="session" (which would stop-only and label them as session containers).
     session_scoped = (_docker_session_isolation_enabled() and task_id != "default"
                       and not _has_isolation_overrides(task_id))
     kwargs = {out: cc.get(key, default) for out, key, default in _DOCKER_KWARGS}
+    kwargs["scope"] = "shared"  # ctor default; only true session scope may override
     if session_scoped:
         retention = cc.get("docker_session_container_retention") or "stop_on_session_end"
         try:
@@ -143,7 +143,6 @@ def _build_docker_env(*, image, cwd, timeout, cc, task_id, host_cwd, **_):
             # Ephemeral per-session isolation: never let a cc-passed scope="session"
             # (user set scope=session but flipped container_persistent to false) flip the
             # ctor's _session_scoped marker — the ephemeral contract is stop+rm.
-            kwargs["scope"] = "shared"
             kwargs["persist_across_processes"] = False
     docker_env_obj = _DockerEnvironment(image=image, cwd=cwd, timeout=timeout, task_id=task_id, host_cwd=host_cwd,
                                         **_resources(cc), **kwargs)

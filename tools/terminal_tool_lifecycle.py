@@ -127,16 +127,19 @@ def _unregister_env(task_id: str):
     """Pop *task_id* from the env cache, activity map and creation locks; return
     the env (or None). Callers run the (slow) teardown OUTSIDE the lock —
     Modal/Docker teardown can block 10-15s and would stall every concurrent
-    terminal/file tool call."""
+    terminal/file tool call. Also drops the session-close registry entry so the
+    map cannot grow unboundedly (#46041)."""
     from tools.terminal_tool import (
         _active_environments, _creation_locks, _creation_locks_lock, _env_lock,
-        _last_activity,
+        _last_activity, _session_close_keys, _session_close_keys_lock,
     )
     with _env_lock:
         env = _active_environments.pop(task_id, None)
         _last_activity.pop(task_id, None)
     with _creation_locks_lock:
         _creation_locks.pop(task_id, None)
+    with _session_close_keys_lock:
+        _session_close_keys.pop(task_id, None)
     return env
 
 
@@ -158,24 +161,32 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         pass
 
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
-    # stop them outside it (see _unregister_env for why). Session-scoped envs
-    # (#46041) answer to the SESSION lifecycle, not the idle clock: stop/keep
-    # retention envs are never idled out (an open session's bg processes must
-    # survive, as they do for the shared container today); idle_ttl envs expire
-    # on their own TTL and are force-removed (stop+rm).
+    # stop them outside it (see _unregister_env for why). TRUE session-scope
+    # envs (#46041, env._scope == "session") get retention-aware treatment:
+    # idle_ttl ones expire on their own TTL and are force-removed (stop+rm);
+    # stop/keep-retention ones tear down WITHOUT force after lifetime_seconds —
+    # cleanup() then applies the retention (stop-only, or persist no-op), the
+    # container stays resumable via labels, and the registry cannot grow
+    # unboundedly in a long-lived gateway process (sessions with active
+    # background processes never reach staleness — has_active_processes above).
+    # Ephemeral per-session isolation (container_persistent: false) keeps the
+    # legacy idle contract — reaped after lifetime_seconds like any sandbox.
     with _env_lock:
         stale = []
         for t, last in list(_last_activity.items()):
-            if current_time - last <= lifetime_seconds:
-                continue
+            age = current_time - last
             env = _active_environments.get(t)
-            if env is not None and getattr(env, "_session_scoped", False):
+            if env is not None and getattr(env, "_scope", "") == "session":
                 retention = getattr(env, "_session_retention", "") or "stop_on_session_end"
-                if retention != "idle_ttl":
+                window = lifetime_seconds
+                if retention == "idle_ttl":
+                    ttl = getattr(env, "_session_ttl_seconds", 0) or 0
+                    if ttl > 0:
+                        window = ttl  # the session's own TTL replaces the generic idle window
+                if age <= window:
                     continue
-                ttl = getattr(env, "_session_ttl_seconds", 0) or 0
-                if ttl > 0 and current_time - last <= ttl:
-                    continue
+            elif age <= lifetime_seconds:
+                continue
             stale.append(t)
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
@@ -186,11 +197,14 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            if getattr(env, "_session_scoped", False) \
+            if getattr(env, "_scope", "") == "session" \
                     and (getattr(env, "_session_retention", "") or "stop_on_session_end") == "idle_ttl":
                 # idle_ttl expiry means removal (stop+rm), bypassing the retention no-op.
                 _teardown_env(env, task_id, force_remove=True)
             else:
+                # stop_on_session_end -> cleanup() stop-only (resumable);
+                # keep_running -> persist no-op (container untouched); other
+                # backends/sandboxes -> their normal teardown.
                 _teardown_env(env, task_id)
 
 

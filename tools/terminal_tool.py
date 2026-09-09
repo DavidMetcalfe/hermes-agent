@@ -1072,8 +1072,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
 
     with _env_lock:
         env: Any = _lookup_active_env(eff, task_id)
-    if env is not None:
-        return env
+        if env is not None:
+            _record_session_close_key(eff)  # session_id may have rotated (/new); refresh
+            return env
 
     with _creation_locks_lock:
         task_lock = _creation_locks.setdefault(eff, threading.Lock())
@@ -1081,8 +1082,9 @@ def _acquire_env(plan: _ExecPlan, task_id: Optional[str]) -> Any:
     with task_lock:
         with _env_lock:
             env = _lookup_active_env(eff, task_id)
-        if env is not None:
-            return env
+            if env is not None:
+                _record_session_close_key(eff)  # session_id may have rotated (/new); refresh
+                return env
 
         if env_type == "singularity":
             _check_disk_usage_warning()
