@@ -158,9 +158,25 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
         pass
 
     # Phase 1: unregister stale entries atomically under the lock; phase 2:
-    # stop them outside it (see _unregister_env for why).
+    # stop them outside it (see _unregister_env for why). Session-scoped envs
+    # (#46041) answer to the SESSION lifecycle, not the idle clock: stop/keep
+    # retention envs are never idled out (an open session's bg processes must
+    # survive, as they do for the shared container today); idle_ttl envs expire
+    # on their own TTL and are force-removed (stop+rm).
     with _env_lock:
-        stale = [t for t, last in list(_last_activity.items()) if current_time - last > lifetime_seconds]
+        stale = []
+        for t, last in list(_last_activity.items()):
+            if current_time - last <= lifetime_seconds:
+                continue
+            env = _active_environments.get(t)
+            if env is not None and getattr(env, "_session_scoped", False):
+                retention = getattr(env, "_session_retention", "") or "stop_on_session_end"
+                if retention != "idle_ttl":
+                    continue
+                ttl = getattr(env, "_session_ttl_seconds", 0) or 0
+                if ttl > 0 and current_time - last <= ttl:
+                    continue
+            stale.append(t)
         envs_to_stop = [(t, _active_environments.pop(t, None)) for t in stale]
         for t in stale:
             _last_activity.pop(t, None)
@@ -170,7 +186,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     for task_id, env in envs_to_stop:
         if env is not None:
             _clear_file_ops_cache(task_id)
-            _teardown_env(env, task_id)
+            if getattr(env, "_session_scoped", False) \
+                    and (getattr(env, "_session_retention", "") or "stop_on_session_end") == "idle_ttl":
+                # idle_ttl expiry means removal (stop+rm), bypassing the retention no-op.
+                _teardown_env(env, task_id, force_remove=True)
+            else:
+                _teardown_env(env, task_id)
 
 
 def get_active_env(task_id: str):
@@ -296,13 +317,29 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     only for user-initiated teardown. The idle reaper calls ``env.cleanup()``
     directly, so persist-mode idle envs are likewise no-op'd; only the orphan
     reaper at next startup reclaims them.
+
+    Close paths may hold a different durable id than the cache key (session
+    scope #46041: AIAgent.close() passes the conversation session_id while the
+    env lives under "session:<session_key>"), so the lookup consults the
+    close-key registry recorded at env creation. Delegate children's close()
+    is unaffected: their ids resolve via the alias registry to the parent's
+    env or miss, as before.
     """
-    env = _unregister_env(task_id)
-    _clear_file_ops_cache(task_id)
+    from tools.terminal_tool import _close_lookup_keys
+    keys = _close_lookup_keys(task_id)
+    env = None
+    matched_key = task_id
+    for key in keys:
+        env = _unregister_env(key)
+        if env is not None:
+            matched_key = key
+            break
+    for key in keys:
+        _clear_file_ops_cache(key)
     if env is None:
         return
     _teardown_env(
-        env, task_id, force_remove=force_remove,
+        env, matched_key, force_remove=force_remove,
         done_msg="Manually cleaned up environment for task: %s",
     )
 
