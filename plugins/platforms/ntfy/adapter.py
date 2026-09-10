@@ -544,22 +544,22 @@ async def _standalone_send(
     if files:
         caption = _cap_to_message_limit(
             (message or "").strip() or None, context="ntfy standalone")
-        for index, (path_value, _is_voice) in enumerate(files):
-            path, error = _read_attachment(path_value)
-            if error:
-                return {"error": f"ntfy standalone send: {error}"}
-            params = _attachment_fields(
-                message=caption if index == 0 else None, file_name=path.name)
-            headers = _attachment_headers(token, markdown)
-            try:
-                body = path.read_bytes()
-            except OSError as e:
-                return {"error": f"ntfy standalone send: attachment file unreadable: {e}"}
-            async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            for index, (path_value, _is_voice) in enumerate(files):
+                path, error = _read_attachment(path_value)
+                if error:
+                    return {"error": f"ntfy standalone send: {error}"}
+                params = _attachment_fields(
+                    message=caption if index == 0 else None, file_name=path.name)
+                headers = _attachment_headers(token, markdown)
+                try:
+                    body = path.read_bytes()
+                except OSError as e:
+                    return {"error": f"ntfy standalone send: attachment file unreadable: {e}"}
                 result = await _publish_attachment(
                     client, server, publish_topic, headers=headers, params=params, body=body)
-            if not result.success:
-                return {"error": f"ntfy standalone send: {result.error}"}
+                if not result.success:
+                    return {"error": f"ntfy standalone send: {result.error}"}
         return {"success": True, "platform": "ntfy", "chat_id": publish_topic}
     headers = _publish_headers(token, markdown, auth_first=False)
     body = _truncate_body(message, context="ntfy standalone")

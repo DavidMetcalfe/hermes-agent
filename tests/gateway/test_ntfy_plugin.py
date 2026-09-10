@@ -440,6 +440,22 @@ class TestAttachmentSend:
         assert call[1]["params"]["attach"] == "https://example.com/flower.jpg"
         assert call[1]["content"] in (b"", None)
 
+    def test_send_image_url_caption_survives_non_ascii(self):
+        """URL attachments take captions too: non-ASCII caption + non-ASCII URL must
+        ride as UTF-8 query params (the header path would raise UnicodeEncodeError)."""
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_image(
+            "hermes-in", "https://example.com/花.jpg", caption="héllo 🎉"))
+
+        assert result.success is True
+        call = client.post.call_args
+        assert call[1]["params"]["message"] == "héllo 🎉"
+        assert call[1]["params"]["attach"] == "https://example.com/花.jpg"
+        assert call[1]["content"] in (b"", None)
+
     def test_send_image_invalid_url_fails_without_post(self):
         adapter = self._make_adapter()
         client = self._mock_client()
