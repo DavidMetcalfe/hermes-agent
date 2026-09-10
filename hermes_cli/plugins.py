@@ -1563,7 +1563,19 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
 
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
-    background discovery instead of racing a second scan."""
+    background discovery instead of racing a second scan.
+
+    A request scoped to another profile (task-local ``HERMES_HOME`` override — e.g. the
+    dashboard's ``?profile=<name>`` handling) must NOT load that profile's plugin modules.
+    Plugin registration has PROCESS-GLOBAL side effects: dashboard-auth providers are upserted
+    by name into a process-global registry, so loading another profile's manager would replace
+    the provider validating the running dashboard's sessions and 401 every live cookie
+    (#106608). The process's own plugins are discovered by its startup path, not by a scoped
+    request, so skipping here changes nothing for the launch profile.
+    """
+    from hermes_constants import get_hermes_home_override
+    if get_hermes_home_override():
+        return
     _join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
 
