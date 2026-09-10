@@ -143,17 +143,17 @@ If you only want Hermes to *push* notifications to ntfy (cron summaries, alerts)
 
 You can send files, images, audio, and video as attachments. Include `MEDIA:/path/to/file` in the message text to attach a local file. The file is uploaded server-side and included in the published notification.
 
-- Use `[[as_document]]` in the message to force the file to be sent as a document attachment (useful for PDF files that should not be displayed inline).
-- Hermes-issued image links (e.g. generated pictures) can be attached by the ntfy server directly via its `X-Attach` mechanism — the server fetches the URL, so the file never transits Hermes.
-- Maximum size: 15 MB per attachment on the public ntfy.sh server, 100 MB total per visitor. Self-hosted servers configure their own limits and may disable attachments entirely.
+- Use `[[as_document]]` in the message for cross-platform parity: on ntfy every attachment is already delivered as a file, so the marker changes nothing (files are never rendered inline).
+- Hermes-issued image links (e.g. generated pictures) can be attached by the ntfy server directly via its `attach` parameter (`X-Attach`) — the server fetches the URL, so the file never transits Hermes.
+- Maximum size: 2 MB per attachment on the public ntfy.sh server (20 MB total per visitor). A self-hosted server ships with a 15 MB default and may disable attachments entirely. Hermes fails fast locally above the cap for your configured server — set `platforms.ntfy.extra.attachment_max_mb` if your server allows a different size.
 - Attachments expire after 3 hours on ntfy.sh.
 - The message text you send becomes the attachment caption.
 
 ## Limits
 
-- **Message size**: ntfy caps message bodies at 4096 chars. Hermes truncates with a warning when this is exceeded.
+- **Message size**: ntfy caps message bodies at 4096 bytes. Hermes truncates with a warning when this is exceeded.
 - **No typing indicators**: the protocol doesn't expose one; `send_typing` is a no-op.
-- **No threads or attachments**: ntfy is plain push notifications. Long replies stay in the message body, no thread fanout.
+- **No threads**: ntfy is plain push notifications. Long replies stay in the message body, no thread fanout; attachments ride with the message (see Attachments above).
 - **No native user identity**: see the identity-model section above.
 
 ## Troubleshooting
