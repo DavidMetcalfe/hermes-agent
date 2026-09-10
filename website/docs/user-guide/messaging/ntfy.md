@@ -139,6 +139,16 @@ The mobile app supports a subset of CommonMark — bold, italic, lists, links, f
 
 If you only want Hermes to *push* notifications to ntfy (cron summaries, alerts) and never accept messages back, set both `NTFY_TOPIC` and `NTFY_PUBLISH_TOPIC` to the same value and skip `NTFY_ALLOWED_USERS` entirely. With no allowlist, the agent never responds to inbound messages — your phone gets the pushes, but the conversation is one-way.
 
+## Attachments
+
+You can send files, images, audio, and video as attachments. Include `MEDIA:/path/to/file` in the message text to attach a local file. The file is uploaded server-side and included in the published notification.
+
+- Use `[[as_document]]` in the message to force the file to be sent as a document attachment (useful for PDF files that should not be displayed inline).
+- HTTP(S) URLs in the message are attached directly by the ntfy server.
+- Maximum size: 15 MB per attachment on the public ntfy.sh server, 100 MB total per visitor. Self-hosted servers configure their own limits and may disable attachments entirely.
+- Attachments expire after 3 hours on ntfy.sh.
+- The message text you send becomes the attachment caption.
+
 ## Limits
 
 - **Message size**: ntfy caps message bodies at 4096 chars. Hermes truncates with a warning when this is exceeded.
