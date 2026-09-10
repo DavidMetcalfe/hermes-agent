@@ -167,12 +167,14 @@ def _cap_to_message_limit(text: Optional[str], *, context: str) -> Optional[str]
 
 
 def _truncate_body(message: str, *, context: str) -> bytes:
-    """Apply the ntfy 4096-char limit, logging a warning (tagged ``context``) on truncation."""
-    if len(message) > MAX_MESSAGE_LENGTH:
-        logger.warning(
-            "%s: truncating message from %d to %d chars (ntfy limit)",
-            context, len(message), MAX_MESSAGE_LENGTH)
-    return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
+    """Encode ``message`` for a publish body, capped at ntfy's 4096-BYTE limit.
+
+    The limit counts bytes, not characters, and an over-limit body is not rejected: the
+    server silently converts it into a file attachment, so a long CJK/emoji message would
+    arrive as a file instead of a notification. Truncation is logged (tagged ``context``).
+    """
+    capped = _cap_to_message_limit(message, context=context)
+    return (capped or "").encode("utf-8")
 
 
 def _response_message_id(resp) -> str:
@@ -381,11 +383,7 @@ class NtfyAdapter(BasePlatformAdapter):
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
         headers = _publish_headers(self._token, bool((self.config.extra or {}).get("markdown", False)))
-        if len(content) > self.MAX_MESSAGE_LENGTH:
-            logger.warning(
-                "[%s] Message truncated from %d to %d chars (ntfy limit)",
-                self.name, len(content), self.MAX_MESSAGE_LENGTH)
-        body = content[:self.MAX_MESSAGE_LENGTH].encode("utf-8")
+        body = _truncate_body(content, context=f"[{self.name}]")
         try:
             resp = await self._http_client.post(
                 f"{self._server}/{publish_topic}", content=body, headers=headers, timeout=15.0)
@@ -606,7 +604,7 @@ def register(ctx) -> None:
             "Use plain text by default — ntfy supports optional markdown "
             "(set markdown: true in config or NTFY_MARKDOWN=true). "
             "Keep responses concise; ntfy is a push notification service "
-            "with a 4096-character per-message limit."
+            "with a 4096-byte per-message limit."
         ))
 
 

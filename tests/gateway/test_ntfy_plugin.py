@@ -257,6 +257,27 @@ class TestSend:
         posted_url = mock_client.post.call_args[0][0]
         assert posted_url.endswith("/override-out")
 
+    def test_send_cjk_body_is_byte_capped(self):
+        """The live reply path shares ntfy's byte limit: an over-limit CJK reply must be
+        truncated, not published as-is (the server turns an oversized body into a file
+        attachment, so the user would get a file instead of a notification)."""
+        adapter = self._make_adapter(topic="hermes-in")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "abc123"}
+
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        result = _run(adapter.send("hermes-in", "漢" * 4096))  # 12 KB in UTF-8
+
+        assert result.success is True
+        body = mock_client.post.call_args[1]["content"]
+        assert len(body) <= _ntfy.MAX_MESSAGE_LENGTH
+        assert body.decode("utf-8").startswith("漢")
+
 
     def test_send_handles_timeout(self):
         adapter = self._make_adapter(topic="hermes-in")
@@ -842,6 +863,17 @@ class TestTruncateHelper:
 
     def test_short_message_passes_through(self):
         assert _ntfy._truncate_body("hi", context="test") == b"hi"
+
+    def test_ascii_message_at_limit_passes_through(self):
+        body = _ntfy._truncate_body("a" * _ntfy.MAX_MESSAGE_LENGTH, context="test")
+        assert body == b"a" * _ntfy.MAX_MESSAGE_LENGTH
+
+    def test_cjk_message_is_truncated_to_the_byte_limit(self):
+        """The cap counts BYTES: 4096 CJK characters are ~12 KB, and ntfy answers an
+        over-limit body with a file attachment instead of a notification."""
+        body = _ntfy._truncate_body("漢" * 4096, context="test")
+        assert len(body) <= _ntfy.MAX_MESSAGE_LENGTH
+        assert body.decode("utf-8").startswith("漢")
 
 
 # ---------------------------------------------------------------------------
