@@ -474,7 +474,9 @@ class NtfyAdapter(BasePlatformAdapter):
         self, chat_id: str, image_url: str, caption: Optional[str] = None,
         reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
         """Send an image URL attachment: the ntfy SERVER fetches it (``attach=``), the
-        publish body stays empty. Non-http(s) URLs are refused without a POST."""
+        publish body stays empty. Non-str URLs and non-http(s) URLs are refused without a POST."""
+        if not isinstance(image_url, str):
+            return SendResult(success=False, error=f"invalid image URL type: {type(image_url).__name__}")
         if not image_url.startswith(("http://", "https://")):
             return SendResult(success=False, error=f"not an http(s) URL: {image_url[:80]}")
         not_ready = self._require_client()

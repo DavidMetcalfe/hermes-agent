@@ -486,6 +486,20 @@ class TestAttachmentSend:
         assert result.success is False
         client.post.assert_not_called()
 
+    def test_send_image_non_str_url_fails_not_raises(self):
+        """``send_image`` returns a failed ``SendResult`` for a non-str URL, like the file
+        path helpers do — ``.startswith`` on a non-str would raise ``AttributeError``."""
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        for bad_url in (None, 42):
+            result = _run(adapter.send_image("hermes-in", bad_url))
+            assert result.success is False
+            assert "invalid image URL type" in result.error
+
+        client.post.assert_not_called()
+
     def test_send_voice_posts_audio_bytes(self, tmp_path):
         media = tmp_path / "note.ogg"
         media.write_bytes(b"OggS")
