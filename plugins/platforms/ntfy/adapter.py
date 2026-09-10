@@ -550,14 +550,18 @@ async def _standalone_send(
     if files:
         caption = _cap_to_message_limit(
             (message or "").strip() or None, context="ntfy standalone")
-        # Validate every attachment BEFORE posting any, so a bad file in a batch
-        # doesn't leave a partial delivery.
+        # Validate every attachment BEFORE posting any: a bad path (missing, not a file,
+        # wrong type, oversized) fails the whole batch instead of delivering a prefix of it.
+        # A file that becomes unreadable after this check, or a mid-batch publish failure,
+        # can still leave earlier attachments delivered.
         read_paths = []
+        max_bytes = _attachment_max_bytes(extra, server)
         for path_value, _is_voice in files:
-            path, error = _read_attachment(path_value)
+            path, error = _read_attachment(path_value, max_bytes=max_bytes)
             if error:
                 return {"error": f"ntfy standalone send: {error}"}
             read_paths.append(path)
+        last_message_id: Optional[str] = None
         async with httpx.AsyncClient(timeout=120.0) as client:
             for index, path in enumerate(read_paths):
                 params = _attachment_fields(
