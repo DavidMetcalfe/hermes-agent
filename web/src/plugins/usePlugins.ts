@@ -84,13 +84,32 @@ export function usePlugins(profile = "") {
     () => !canSeedLoadedFromCache(getCachedManifests(profile)),
   );
   const loadedScripts = useRef<Set<string>>(new Set());
+  const [activeProfile, setActiveProfile] = useState(profile);
+
+  // Adjusting state when the selected profile changes. A hook cannot remount, so
+  // reset the per-profile plugin state during render (React's "adjust state when
+  // a prop changes" pattern) — the equivalent of ProfileKeyedRoutes' remount for
+  // pages. Without this the asset effect below would run with the PREVIOUS
+  // profile's manifests and the NEW profile (requesting ?profile=new for old
+  // plugin names → 404s, and poisoning the loadedScripts dedupe), and the
+  // pluginsLoading gate would not re-arm.
+  if (profile !== activeProfile) {
+    const cached = getCachedManifests(profile);
+    setActiveProfile(profile);
+    setManifests(cached ?? []);
+    setPlugins([]);
+    setLoading(!canSeedLoadedFromCache(cached));
+  }
 
   // Always re-fetch in the background to keep the cache fresh.
   // This handles: new plugins added, plugins removed, manifest changes.
   // setManifests(list) will update routes if the server list differs from cache.
-  // Re-runs when the selected management profile changes so the plugin list
-  // (and the sidebar tabs it drives) follows the selected profile (#46408).
+  // Re-runs when the selected management profile changes so the plugin list and
+  // the sidebar tabs it drives follow the selected profile (#46408).
   useEffect(() => {
+    // Drop the per-profile dedupe so the new profile's bundles load even when a
+    // same-named plugin was injected under the previous profile.
+    loadedScripts.current = new Set();
     api
       .getPlugins()
       .then((list) => {

@@ -100,6 +100,21 @@ describe("plugin manifest cache helpers", () => {
     vi.stubGlobal("sessionStorage", badStorage);
     expect(() => cacheManifests([exampleManifest])).not.toThrow();
   });
+
+  it("namespaces the manifest cache per management profile (#46408)", () => {
+    const a: PluginManifest[] = [exampleManifest];
+    const b: PluginManifest[] = [{ ...exampleManifest, name: "worker-plugin" }];
+    cacheManifests(a, "alpha");
+    cacheManifests(b, "beta");
+    // Profiles never read each other's cached list.
+    expect(getCachedManifests("alpha")).toEqual(a);
+    expect(getCachedManifests("beta")).toEqual(b);
+    // The unset profile keeps the legacy base key (the dashboard's own profile).
+    expect(getCachedManifests()).toBeNull();
+    cacheManifests(a);
+    expect(getCachedManifests()).toEqual(a);
+    expect(getCachedManifests("alpha")).toEqual(a);
+  });
 });
 
 describe("canSeedLoadedFromCache (loading seed gate)", () => {
