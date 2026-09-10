@@ -25,7 +25,7 @@ State machine for the measurement harness. The harness defines **what** is measu
 
 ## Transition Rules
 - **DRAFT -> MEASURED**: Run harness repeatedly (`--samples N`). Verify the output is a single number and repeated runs land within an acceptable spread. No file is created yet.
-- **MEASURED -> BASELINED**: Run `sample_metric.py baseline`. This records the median and the sample count, computes `harness_id` (the first 12 hex characters of the SHA-256 of the whitespace-normalized harness command), and writes `.hillclimb/baseline.json`.
+- **MEASURED -> BASELINED**: Run `sample_metric.py baseline`. This records the median, the sample count and the extraction spec, computes `harness_id` (the first 12 hex characters of the SHA-256 of the whitespace-normalized harness command), and writes `.hillclimb/baseline.json`. Recording the extraction spec is what lets `compare` read the number the same way the baseline did instead of guessing.
 - **BASELINED -> INVALIDATED**: Any edit to the harness command (even whitespace changes) makes `compare` exit 3. The only legitimate path is to record the harness edit as a decision row (`tests: none`, `before: na`, `after: na`) before re-baselining.
 - **INVALIDATED -> RE-BASELINED**: After recording the harness edit, run `baseline` again. This creates a new frozen baseline.
 

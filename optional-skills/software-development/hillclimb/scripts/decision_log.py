@@ -25,10 +25,12 @@ Subcommands:
       its own `before`. Plateau needs at least `window` attempts. Exit 0.
       `best_improvement` is positive when the metric got better (in either
       direction); `worst_regression` is negative when it got worse.
-  verify [--json]
-      Validate the whole trail against the schema and the frozen baseline.
-      Exit 0 when clean or when no log exists yet (`no-log`); exit 1 when any
-      problem is found.
+  verify
+      Validate the whole trail against the schema and the frozen baseline:
+      column counts, ids, delta arithmetic, enums, unparseable metric fields,
+      and rows whose harness no longer matches the frozen baseline. Prints
+      JSON. Exit 0 when clean or when no log exists yet (`no-log`); exit 1 when
+      any problem is found.
 
 Exit codes:
   0 - success (including `verify` on a clean log and on a missing log)
@@ -63,7 +65,6 @@ COLUMNS = [
 HEADER = "\t".join(COLUMNS)
 TESTS_VALUES = ("pass", "fail", "none")
 VERDICT_VALUES = ("kept", "reverted")
-FREE_TEXT_INDEXES = (2, 3, 10)  # hypothesis, change, note
 DELTA_TOLERANCE = 1e-9
 
 
@@ -88,6 +89,12 @@ def ensure_dir(path: Path) -> None:
         die(f"{path} could not be created as a directory")
 
 
+def check_dir(path: Path) -> None:
+    """Read paths: absent state is empty state, but a non-directory is an error."""
+    if path.exists() and not path.is_dir():
+        die(f"{path} exists but is not a directory")
+
+
 def sanitize(value: str | None) -> str:
     return (value or "").replace("\t", " ").replace("\n", " ").replace("\r", " ")
 
@@ -105,7 +112,7 @@ def load_rows(path: Path) -> list[list[str]]:
     with open(tsv, "r", encoding="utf-8", errors="replace") as handle:
         handle.readline()  # header, validated by `verify`
         for line in handle:
-            line = line.rstrip("\n")
+            line = line.rstrip("\r\n")
             if line:
                 rows.append(line.split("\t"))
     return rows
@@ -122,13 +129,23 @@ def load_baseline(path: Path) -> dict:
 
 
 def parse_metric(value: str | None) -> float | None:
-    """`na` and empty both mean 'no measurement'."""
+    """`na` and empty both mean 'no measurement'. Garbage is a hard error."""
     if value is None or value == "na" or value == "":
         return None
     try:
         return float(value)
     except ValueError:
         die(f"not a number and not 'na': {value!r}")
+
+
+def parse_field(value: str) -> float | None:
+    """Non-fatal variant used by `verify`: unparseable text yields None."""
+    if value in ("na", ""):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
 
 
 def format_metric(value: float | None) -> str:
@@ -185,7 +202,7 @@ def cmd_append(args: argparse.Namespace) -> int:
 
     tsv = path / "decision.tsv"
     new_file = not tsv.is_file()
-    with open(tsv, "a", encoding="utf-8") as handle:
+    with open(tsv, "a", encoding="utf-8", newline="") as handle:
         if new_file:
             handle.write(HEADER + "\n")
         handle.write("\t".join(row) + "\n")
@@ -195,7 +212,17 @@ def cmd_append(args: argparse.Namespace) -> int:
 
 
 def cmd_list(args: argparse.Namespace) -> int:
-    rows = load_rows(resolve_dir(args.dir))
+    path = resolve_dir(args.dir)
+    check_dir(path)
+    raw = load_rows(path)
+    rows = [r for r in raw if len(r) == len(COLUMNS)]
+    malformed = len(raw) - len(rows)
+    if malformed:
+        # Never hide corruption in a display command; `verify` names it precisely.
+        print(
+            f"warning: {malformed} malformed row(s) skipped; run `verify` for details",
+            file=sys.stderr,
+        )
     if args.verdict:
         rows = [r for r in rows if len(r) > 8 and r[8] == args.verdict]
     if args.limit is not None:
@@ -228,6 +255,7 @@ def relative_improvement(row: list[str], direction: str) -> float | None:
 
 def cmd_stats(args: argparse.Namespace) -> int:
     path = resolve_dir(args.dir)
+    check_dir(path)
     rows = [r for r in load_rows(path) if len(r) == len(COLUMNS)]
     baseline = load_baseline(path)
     direction = baseline.get("direction", "minimize")
@@ -235,6 +263,8 @@ def cmd_stats(args: argparse.Namespace) -> int:
         direction = "minimize"
 
     window = args.window if args.window is not None else 3
+    if window < 1:
+        die("--window must be at least 1")
     threshold = args.threshold if args.threshold is not None else 0.02
 
     kept = sum(1 for r in rows if r[8] == "kept")
@@ -247,29 +277,35 @@ def cmd_stats(args: argparse.Namespace) -> int:
             continue
 
     improvements = [-d if direction == "minimize" else d for d in deltas]
-    recent = rows[-window:] if window > 0 else []
-    window_improvements = [-d if direction == "minimize" else d for d in deltas[-window:]]
+    recent = rows[-window:]
+    window_improvements: list[float] = []
+    for row in recent:
+        try:
+            value = float(row[6])
+        except (IndexError, ValueError):
+            continue
+        window_improvements.append(-value if direction == "minimize" else value)
 
+    # An attempt that cannot be measured (na metric, or a zero baseline) is not
+    # evidence that the metric moved, so it counts as below threshold.
     reasons: list[str] = []
-    plateau = False
-    if window > 0 and len(recent) >= window:
-        plateau = True
-        for row in recent:
-            rel = relative_improvement(row, direction)
-            if rel is None or rel >= threshold:
-                plateau = False
-                continue
-            reasons.append(
-                f"attempt {row[0]}: relative improvement {rel:.4f} < {threshold:.2f}"
-            )
+    for row in recent:
+        rel = relative_improvement(row, direction)
+        if rel is not None and rel >= threshold:
+            continue
+        shown = "unmeasurable" if rel is None else f"{rel:.4f}"
+        reasons.append(f"attempt {row[0]}: relative improvement {shown} < {threshold:.2f}")
+    plateau = len(recent) >= window and len(reasons) == len(recent)
+    if not plateau:
+        reasons = []
 
     result = {
         "attempts": len(rows),
         "kept": kept,
         "reverted": reverted,
         "direction": direction,
-        "best_improvement": max(improvements) if improvements else None,
-        "worst_regression": min(improvements) if improvements else None,
+        "best_improvement": max([i for i in improvements if i > 0], default=None),
+        "worst_regression": min([i for i in improvements if i < 0], default=None),
         "mean_improvement_last_window": (
             sum(window_improvements) / len(window_improvements) if window_improvements else None
         ),
@@ -283,10 +319,9 @@ def cmd_stats(args: argparse.Namespace) -> int:
         return 0
     print(f"Attempts: {result['attempts']} (kept {kept}, reverted {reverted})")
     print(f"Direction: {direction}")
-    if result["best_improvement"] is not None:
-        print(f"Best improvement: {result['best_improvement']}")
-        print(f"Worst regression: {result['worst_regression']}")
-        print(f"Mean improvement (last {window}): {result['mean_improvement_last_window']}")
+    print(f"Best improvement: {result['best_improvement']}")
+    print(f"Worst regression: {result['worst_regression']}")
+    print(f"Mean improvement (last {window}): {result['mean_improvement_last_window']}")
     print(f"Plateau: {plateau}")
     for reason in reasons:
         print(f"  - {reason}")
@@ -295,6 +330,7 @@ def cmd_stats(args: argparse.Namespace) -> int:
 
 def cmd_verify(args: argparse.Namespace) -> int:
     path = resolve_dir(args.dir)
+    check_dir(path)
     tsv = path / "decision.tsv"
     if not tsv.is_file():
         print(json.dumps({"problems": [{"type": "no-log"}]}, indent=2))
@@ -302,10 +338,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     problems: list[dict] = []
     with open(tsv, "r", encoding="utf-8", errors="replace") as handle:
-        header = handle.readline().rstrip("\n")
+        header = handle.readline().rstrip("\r\n")
         if header != HEADER:
             problems.append({"type": "wrong-header"})
-        raw = [line.rstrip("\n") for line in handle if line.strip()]
+        raw = [line.rstrip("\r\n") for line in handle if line.strip()]
+    baseline_id = load_baseline(path).get("harness_id")
 
     ids: list[int] = []
     for index, line in enumerate(raw, start=1):
@@ -318,14 +355,13 @@ def cmd_verify(args: argparse.Namespace) -> int:
         except ValueError:
             problems.append({"type": "non-numeric-id", "row": index})
 
-        try:
-            before = float(fields[4])
-        except ValueError:
-            before = None
-        try:
-            after = float(fields[5])
-        except ValueError:
-            after = None
+        for name, raw_value in (("before", fields[4]), ("after", fields[5])):
+            if raw_value not in ("na", "") and parse_field(raw_value) is None:
+                problems.append(
+                    {"type": "invalid-metric", "row": index, "field": name, "value": raw_value}
+                )
+        before = parse_field(fields[4])
+        after = parse_field(fields[5])
         expected = compute_delta(before, after)
         stored = fields[6]
         if expected is None:
@@ -345,7 +381,6 @@ def cmd_verify(args: argparse.Namespace) -> int:
         if fields[8] not in VERDICT_VALUES:
             problems.append({"type": "invalid-verdict", "row": index, "value": fields[8]})
 
-        baseline_id = load_baseline(path).get("harness_id")
         if baseline_id and fields[9] != baseline_id:
             problems.append(
                 {"type": "stale-harness", "row": index, "log_id": fields[9], "baseline_id": baseline_id}
@@ -401,7 +436,6 @@ def build_parser() -> argparse.ArgumentParser:
     stats.set_defaults(func=cmd_stats)
 
     verify = subparsers.add_parser("verify", help="Validate the log")
-    verify.add_argument("--json", action="store_true")
     _add_dir(verify)
     verify.set_defaults(func=cmd_verify)
 

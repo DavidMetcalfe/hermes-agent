@@ -30,7 +30,7 @@ metadata:
 | 10 | `harness_id` | 12 hex chars | Fingerprint of the harness that produced the numbers. |
 | 11 | `note` | free text | What the data showed. This is what you read before the next attempt. |
 
-`append` replaces tab and newline characters inside the free-text fields with spaces, so a note containing a tab cannot corrupt the row.
+`append` replaces tab and newline characters inside the free-text fields with spaces, so a note containing a tab cannot corrupt the row. `list` skips a malformed row rather than crashing on it, and says so on stderr - `verify` is what names the problem precisely.
 
 ## Why `delta` is raw arithmetic
 
@@ -76,6 +76,7 @@ Row 3 is the case the three-state `tests` column exists for: a real 0.1s win, re
 | `duplicate-ids` | The same id appears more than once. |
 | `row-wrong-column-count` | The row does not have exactly 11 columns. |
 | `delta-mismatch` | `delta` is not equal to `after - before`. |
+| `invalid-metric` | The `before` or `after` column is neither a number nor `na`. |
 | `invalid-tests` | `tests` is not one of `pass`, `fail`, `none`. |
 | `invalid-verdict` | `verdict` is not one of `kept`, `reverted`. |
 | `stale-harness` | The row's `harness_id` differs from the frozen baseline's. |

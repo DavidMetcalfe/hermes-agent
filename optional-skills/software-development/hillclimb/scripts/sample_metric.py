@@ -18,13 +18,17 @@ average over failed runs - a metric built from failed samples is not a metric.
 Subcommands:
   baseline --harness CMD [--samples N] [--extract SPEC] [--name S]
            [--direction minimize|maximize] [--unit S] [--timeout S]
-      Sample, then write baseline.json with frozen: true. Exit 0.
-  run --harness CMD [--samples N] [--extract SPEC] [--timeout S] [--json]
+      Sample, then write baseline.json with frozen: true. The extraction spec
+      is recorded in the baseline so `compare` reuses it. Exit 0.
+  run --harness CMD [--samples N] [--extract SPEC] [--timeout S]
       Sample without touching the baseline. Exit 0.
-  compare [--harness CMD | --value F] [--samples N] [--extract SPEC] [--json]
-      Compare against the frozen baseline. Exit 0 for a direction-aware
-      improvement, 1 when the metric did not improve, 3 when the harness no
-      longer matches the frozen baseline.
+  compare [--harness CMD | --value F] [--samples N] [--extract SPEC]
+      Compare against the frozen baseline. When --extract is omitted, the spec
+      recorded in the baseline is used, so a comparison can never silently
+      measure a different way than the baseline did. Exit 0 for a direction-aware
+      improvement, 1 when the metric did not improve, 2 when there is no
+      baseline or the value is unusable, 3 when the harness no longer matches
+      the frozen baseline.
 
 --extract SPEC grammar (default: auto):
   auto             the LAST number printed (optional trailing unit)
@@ -57,7 +61,6 @@ from typing import NoReturn
 DEFAULT_SAMPLES = 5
 DEFAULT_TIMEOUT = 300
 NUMBER_RE = re.compile(r"[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?")
-PATH_SEPARATOR = os.sep
 
 
 def die(message: str, code: int = 2) -> NoReturn:
@@ -109,7 +112,7 @@ def extract_metric(text: str, spec: str) -> tuple[float | None, str | None]:
         match = compiled.search(text)
         if not match:
             return None, "regex: no match in stdout"
-        captured = match.group(match.lastindex) if match.lastindex else match.group(0)
+        captured = match.group(1) if match.lastindex else match.group(0)
         try:
             return float(captured), None
         except ValueError:
@@ -156,6 +159,8 @@ def run_harness(command: str, timeout: int) -> tuple[int, str, str]:
             shell=True,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
@@ -167,6 +172,8 @@ def run_harness(command: str, timeout: int) -> tuple[int, str, str]:
 
 def sample(command: str, count: int, extract: str, timeout: int) -> tuple[dict | None, list[dict]]:
     """Return (summary, failures). summary is None when any sample failed."""
+    if count < 1:
+        die("--samples must be at least 1")
     values: list[float] = []
     failures: list[dict] = []
     for index in range(1, count + 1):
@@ -234,7 +241,8 @@ def load_baseline(path: Path) -> dict:
 
 def cmd_baseline(args: argparse.Namespace) -> int:
     path = resolve_dir(args.dir)
-    summary, failures = sample(args.harness, args.samples, args.extract, args.timeout)
+    extract = args.extract or "auto"
+    summary, failures = sample(args.harness, args.samples, extract, args.timeout)
     if summary is None:
         report_failures(args.harness, failures)
     ensure_dir(path)
@@ -244,6 +252,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         "direction": args.direction,
         "harness": args.harness,
         "harness_id": harness_id(args.harness),
+        "extract": extract,
         "samples": summary["samples"],
         "median": summary["median"],
         "min": summary["min"],
@@ -261,7 +270,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    summary, failures = sample(args.harness, args.samples, args.extract, args.timeout)
+    summary, failures = sample(args.harness, args.samples, args.extract or "auto", args.timeout)
     if summary is None:
         report_failures(args.harness, failures)
     print(json.dumps(summary, indent=2))
@@ -291,7 +300,10 @@ def cmd_compare(args: argparse.Namespace) -> int:
                 )
             )
             return 3
-        summary, failures = sample(args.harness, args.samples, args.extract, args.timeout)
+        # Reuse the extraction spec the baseline was recorded with, so `compare`
+        # can never silently measure a different way than the baseline did.
+        extract = args.extract or baseline.get("extract") or "auto"
+        summary, failures = sample(args.harness, args.samples, extract, args.timeout)
         if summary is None:
             report_failures(args.harness, failures)
         after = summary["median"]
@@ -332,8 +344,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--extract",
-        default="auto",
-        help="auto | regex:PATTERN | json:dotted.path | line:PREFIX",
+        default=None,
+        help=(
+            "auto | regex:PATTERN | json:dotted.path | line:PREFIX. Defaults to auto, "
+            "except in `compare`, which defaults to the spec recorded in the baseline."
+        ),
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -357,7 +372,6 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--harness", required=True)
     run.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     run.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    run.add_argument("--json", action="store_true")
     add_common(run)
     run.set_defaults(func=cmd_run)
 
@@ -366,7 +380,6 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--value", default=None)
     compare.add_argument("--samples", type=int, default=DEFAULT_SAMPLES)
     compare.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT)
-    compare.add_argument("--json", action="store_true")
     add_common(compare)
     compare.set_defaults(func=cmd_compare)
 

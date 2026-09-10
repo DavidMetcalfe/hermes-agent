@@ -470,3 +470,183 @@ def test_skill_documents_only_files_it_ships():
         "plateau-playbook.md",
         "unattended-mode.md",
     }
+
+
+# --------------------------------------------------------------------------- #
+# Regression tests. Every case below was found by cross-vendor review of the
+# scripts rather than by the original implementation.
+# --------------------------------------------------------------------------- #
+
+
+def test_extract_regex_uses_the_first_capture_group(tmp_path):
+    harness = write_harness(tmp_path / "two.py", "print('a=1 b=2')\n")
+    result = run(
+        SAMPLE_METRIC,
+        "run",
+        "--harness",
+        harness,
+        "--samples",
+        "1",
+        "--extract",
+        r"regex:a=(\d+) b=(\d+)",
+        "--dir",
+        str(tmp_path),
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout)["median"] == 1.0
+
+
+def test_compare_reuses_the_extraction_spec_recorded_in_the_baseline(tmp_path):
+    """`compare` used to silently fall back to `auto` and measure a different number."""
+    harness = write_harness(
+        tmp_path / "two.py", "print('Total runtime: 5.0 s')\nprint('checksum 999')\n"
+    )
+    spec = "line:Total runtime:"
+    baseline = run(
+        SAMPLE_METRIC,
+        "baseline",
+        "--harness",
+        harness,
+        "--samples",
+        "1",
+        "--extract",
+        spec,
+        "--dir",
+        str(tmp_path),
+    )
+    assert baseline.returncode == 0, baseline.stderr
+    frozen = json.loads((tmp_path / "baseline.json").read_text(encoding="utf-8"))
+    assert frozen["extract"] == spec
+    assert frozen["median"] == 5.0
+
+    # No --extract here: `auto` would read 999 and report a huge win.
+    result = run(
+        SAMPLE_METRIC, "compare", "--harness", harness, "--samples", "1", "--dir", str(tmp_path)
+    )
+    assert result.returncode == 1
+    payload = json.loads(result.stdout)
+    assert payload["before"] == 5.0
+    assert payload["after"] == 5.0
+
+
+def test_samples_must_be_at_least_one(tmp_path):
+    harness = write_harness(tmp_path / "a.py", "print(1)\n")
+    result = run(
+        SAMPLE_METRIC, "run", "--harness", harness, "--samples", "0", "--dir", str(tmp_path)
+    )
+    assert result.returncode == 2
+    assert "at least 1" in result.stderr
+
+
+def test_list_does_not_crash_on_a_malformed_row(tmp_path):
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 5.0, 4.0).returncode == 0
+    good = tsv_rows(log_dir)[0]
+    (log_dir / "decision.tsv").write_text(
+        HEADER + "\n" + "\t".join(good) + "\n" + "7\tbroken\n", encoding="utf-8"
+    )
+    result = run(DECISION_LOG, "list", "--dir", str(log_dir))
+    assert result.returncode == 0, result.stderr
+    assert good[0] in result.stdout
+    # the malformed row is skipped from the table but never hidden silently
+    assert "malformed" in result.stderr
+    assert run(DECISION_LOG, "verify", "--dir", str(log_dir)).returncode == 1
+
+
+def test_stats_rejects_a_window_below_one(tmp_path):
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 5.0, 4.0).returncode == 0
+    assert run(DECISION_LOG, "stats", "--dir", str(log_dir), "--window", "0").returncode == 2
+
+
+def test_plateau_reasons_are_empty_when_there_is_no_plateau(tmp_path):
+    log_dir = tmp_path / "log"
+    for before, after in ((10.0, 9.0), (9.0, 8.99), (8.99, 8.98)):
+        assert append(log_dir, before, after).returncode == 0
+    payload = json.loads(run(DECISION_LOG, "stats", "--dir", str(log_dir), "--json").stdout)
+    assert payload["plateau"] is False
+    assert payload["plateau_reasons"] == []
+
+
+def test_stats_window_is_taken_from_the_window_rows(tmp_path):
+    """Regression: the window average used to be sliced from a filtered list."""
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 10.0, 9.0).returncode == 0  # a big win, outside the window
+    assert (
+        run(
+            DECISION_LOG,
+            "append",
+            "--dir",
+            str(log_dir),
+            "--hypothesis",
+            "pivot",
+            "--change",
+            "none",
+            "--before",
+            "na",
+            "--after",
+            "na",
+            "--tests",
+            "none",
+            "--verdict",
+            "reverted",
+        ).returncode
+        == 0
+    )
+    assert append(log_dir, 9.0, 8.95).returncode == 0
+    assert append(log_dir, 8.95, 8.91).returncode == 0
+    payload = json.loads(run(DECISION_LOG, "stats", "--dir", str(log_dir), "--json").stdout)
+    # mean of the two measurable improvements inside the window: (0.05 + 0.04) / 2
+    assert payload["mean_improvement_last_window"] == pytest.approx(0.045)
+    # an unmeasurable attempt is not evidence of movement, so it counts as a stall
+    assert payload["plateau"] is True
+
+
+def test_worst_regression_is_none_when_nothing_regressed(tmp_path):
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 10.0, 9.0).returncode == 0
+    assert append(log_dir, 9.0, 8.0).returncode == 0
+    payload = json.loads(run(DECISION_LOG, "stats", "--dir", str(log_dir), "--json").stdout)
+    assert payload["best_improvement"] == pytest.approx(1.0)
+    assert payload["worst_regression"] is None
+
+
+def test_worst_regression_is_negative_when_a_metric_regressed(tmp_path):
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 10.0, 11.5).returncode == 0
+    payload = json.loads(run(DECISION_LOG, "stats", "--dir", str(log_dir), "--json").stdout)
+    assert payload["best_improvement"] is None
+    assert payload["worst_regression"] == pytest.approx(-1.5)
+
+
+def test_verify_flags_an_unparseable_metric_field(tmp_path):
+    log_dir = tmp_path / "log"
+    log_dir.mkdir(parents=True)
+    row = ["1", "2026-09-10T00:00:00Z", "h", "c", "fast", "na", "na", "none", "reverted", "", "note"]
+    assert len(row) == 11
+    (log_dir / "decision.tsv").write_text(HEADER + "\n" + "\t".join(row) + "\n", encoding="utf-8")
+    result = run(DECISION_LOG, "verify", "--dir", str(log_dir))
+    assert result.returncode == 1
+    assert "invalid-metric" in result.stdout
+
+
+def test_verify_accepts_a_crlf_log(tmp_path):
+    """A Windows-written log uses CRLF; the header must still match."""
+    log_dir = tmp_path / "log"
+    assert append(log_dir, 5.0, 4.0).returncode == 0
+    text = (log_dir / "decision.tsv").read_text(encoding="utf-8")
+    (log_dir / "decision.tsv").write_bytes(text.replace("\n", "\r\n").encode("utf-8"))
+    verify = run(DECISION_LOG, "verify", "--dir", str(log_dir))
+    assert verify.returncode == 0
+    assert json.loads(verify.stdout)["problems"] == []
+    listed = run(DECISION_LOG, "list", "--dir", str(log_dir), "--json")
+    assert json.loads(listed.stdout)[0]["id"] == "1"
+
+
+@pytest.mark.parametrize("command", ["list", "stats", "verify"])
+def test_read_paths_reject_a_file_used_as_dir(tmp_path, command):
+    target = tmp_path / "afile"
+    target.write_text("not a directory", encoding="utf-8")
+    result = run(DECISION_LOG, command, "--dir", str(target))
+    assert result.returncode == 2
+    assert "not a directory" in result.stderr
