@@ -804,6 +804,30 @@ class TestStandaloneSend:
             pconfig, "", "caption", media_files=[(str(tmp_path / "gone.bin"), False)]))
         assert "error" in result
 
+    def test_standalone_send_media_returns_message_id(self, monkeypatch, tmp_path):
+        """The media success result carries the last published attachment's id — the text
+        branch returns one, and callers that surface ``message_id`` must not get ``None``."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+        media = tmp_path / "photo.jpg"
+        media.write_bytes(b"\xff\xd8jpg")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "att-9"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            result = _run(_standalone_send(pconfig, "", "photo", media_files=[(str(media), False)]))
+
+        assert result.get("success") is True
+        assert result.get("message_id") == "att-9"
+
 
 # ---------------------------------------------------------------------------
 # 11. register() — plugin-side metadata

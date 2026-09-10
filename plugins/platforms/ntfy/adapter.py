@@ -573,7 +573,10 @@ async def _standalone_send(
                     client, server, publish_topic, headers=headers, params=params, body=body)
                 if not result.success:
                     return {"error": f"ntfy standalone send: {result.error}"}
-        return {"success": True, "platform": "ntfy", "chat_id": publish_topic}
+                last_message_id = result.message_id
+        return {
+            "success": True, "platform": "ntfy", "chat_id": publish_topic,
+            "message_id": last_message_id}
     headers = _publish_headers(token, markdown, auth_first=False)
     body = _truncate_body(message, context="ntfy standalone")
     try:
