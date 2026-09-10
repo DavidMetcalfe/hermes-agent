@@ -912,18 +912,34 @@ def _voice_list_error_logged_once(signature: Optional[str]) -> bool:
 
 _ACTION_LOG_FILES.setdefault("computer-use-grant", "action-computer-use-grant.log")
 
-# Cache discovered plugins per-process (refresh on explicit re-scan).
-_dashboard_plugins_cache: Optional[list] = None
+# Cache discovered plugins per-process, keyed by the resolved home so a request
+# scoped to a different profile (via ``?profile=<name>``) gets its own discovery
+# result instead of another profile's (issue #46408). Discovery now depends on the
+# task-local home (see ``_dashboard_plugin_search_dirs``), so it must not be shared
+# across profiles.
+_dashboard_plugins_cache: dict[str, list] = {}
 
 
 def _get_dashboard_plugins(force_rescan: bool = False) -> list:
     global _dashboard_plugins_cache
-    stale = _dashboard_plugins_cache is None or force_rescan or any(
-        not Path(p["_dir"]).is_dir() for p in _dashboard_plugins_cache
-    )
-    if stale:
-        _dashboard_plugins_cache = _discover_dashboard_plugins()
-    return _dashboard_plugins_cache
+    from hermes_cli.config import get_hermes_home
+    home = str(get_hermes_home())
+    # The cache is a per-process dict keyed by resolved home so a request scoped
+    # to a different profile gets its own discovery result (#46408). Tests that
+    # seed/reset it with a bare list or None keep working: treat those as the
+    # current value (None => re-discover).
+    if isinstance(_dashboard_plugins_cache, dict):
+        cached = _dashboard_plugins_cache.get(home)
+    else:
+        cached = _dashboard_plugins_cache
+    if cached is None or force_rescan or any(not Path(p["_dir"]).is_dir() for p in cached):
+        cached = _discover_dashboard_plugins()
+        if isinstance(_dashboard_plugins_cache, dict) or _dashboard_plugins_cache is None:
+            _dashboard_plugins_cache = {}
+            _dashboard_plugins_cache[home] = cached
+        else:
+            _dashboard_plugins_cache = cached
+    return cached
 
 
 # Router mounting. ORDER IS ROUTE-MATCHING ORDER: literal paths must land before
