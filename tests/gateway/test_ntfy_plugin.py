@@ -355,6 +355,30 @@ class TestAttachmentSend:
         assert result.success is True
         assert client.post.call_args[1]["params"]["message"] == "héllo 🎉"
 
+    def test_caption_truncation(self):
+        """ntfy's 4096 message limit counts BYTES: a caption of 4096 CJK chars is
+        ~12k bytes and must be truncated to fit, at a character boundary."""
+        adapter = self._make_adapter()
+        capped = adapter._attachment_cap("漢" * 4096)  # 3 bytes/char in UTF-8
+        assert capped is not None
+        assert len(capped.encode("utf-8")) <= _ntfy.MAX_MESSAGE_LENGTH
+        assert len(capped) < 4096  # well under the char count that blew the byte budget
+        # ASCII at the byte limit passes through unchanged
+        assert adapter._attachment_cap("a" * 4096) == "a" * 4096
+
+    def test_send_document_cjk_caption_byte_capped(self, tmp_path):
+        """End-to-end: an oversized CJK caption goes out within the byte limit."""
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        _run(adapter.send_document("hermes-in", str(media), caption="漢" * 4096))
+
+        sent = client.post.call_args[1]["params"]["message"]
+        assert len(sent.encode("utf-8")) <= _ntfy.MAX_MESSAGE_LENGTH
+
     def test_send_document_without_caption_has_no_message_param(self, tmp_path):
         media = tmp_path / "c.txt"
         media.write_bytes(b"x")

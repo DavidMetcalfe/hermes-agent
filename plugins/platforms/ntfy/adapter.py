@@ -148,6 +148,20 @@ def _read_attachment(path_value: Any) -> "Tuple[Path, None] | Tuple[None, str]":
     return path, None
 
 
+def _cap_to_message_limit(text: Optional[str], *, context: str) -> Optional[str]:
+    """Byte-aware cap to ntfy's message limit: it counts BYTES (a 4096-char CJK/emoji
+    caption is up to 4x that), so truncate the UTF-8 encoding at a character boundary."""
+    if text is None:
+        return None
+    encoded = text.encode("utf-8")
+    if len(encoded) <= MAX_MESSAGE_LENGTH:
+        return text
+    logger.warning(
+        "%s: truncating message from %d to %d bytes (ntfy limit)",
+        context, len(encoded), MAX_MESSAGE_LENGTH)
+    return encoded[:MAX_MESSAGE_LENGTH].decode("utf-8", errors="ignore")
+
+
 def _truncate_body(message: str, *, context: str) -> bytes:
     """Apply the ntfy 4096-char limit, logging a warning (tagged ``context``) on truncation."""
     if len(message) > MAX_MESSAGE_LENGTH:
@@ -392,10 +406,8 @@ class NtfyAdapter(BasePlatformAdapter):
         return bool((self.config.extra or {}).get("markdown", False))
 
     def _attachment_cap(self, caption: Optional[str]) -> Optional[str]:
-        """Caption for ``message=``: truncated to the 4096-char ntfy message limit."""
-        if caption is None:
-            return None
-        return caption[:MAX_MESSAGE_LENGTH]
+        """Caption for ``message=`` — byte-aware cap to ntfy's message limit."""
+        return _cap_to_message_limit(caption, context="ntfy attachment caption")
 
     def _require_client(self) -> Optional[SendResult]:
         if not self._http_client:
@@ -530,7 +542,8 @@ async def _standalone_send(
     markdown = bool(extra.get("markdown")) or markdown_env in _MARKDOWN_TRUTHY
     files = [(path, bool(is_voice)) for path, is_voice in (media_files or [])]
     if files:
-        caption = (message or "").strip()[:MAX_MESSAGE_LENGTH] or None
+        caption = _cap_to_message_limit(
+            (message or "").strip() or None, context="ntfy standalone")
         for index, (path_value, _is_voice) in enumerate(files):
             path, error = _read_attachment(path_value)
             if error:
