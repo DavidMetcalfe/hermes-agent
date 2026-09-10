@@ -1573,10 +1573,16 @@ def discover_plugins(force: bool = False) -> None:
     (#106608). The process's own plugins are discovered by its startup path, not by a scoped
     request, so skipping here changes nothing for the launch profile.
     """
-    from hermes_constants import get_hermes_home_override
-    if get_hermes_home_override():
-        return
     _join_background_discovery()
+    from hermes_constants import get_hermes_home_override
+    override = get_hermes_home_override()
+    if override:
+        logger.debug(
+            "Skipping plugin discovery under profile override %s: a scoped request must not "
+            "load another profile's plugin modules (process-global side effects, #106608)",
+            override,
+        )
+        return
     get_plugin_manager().discover_and_load(force=force)
 
 

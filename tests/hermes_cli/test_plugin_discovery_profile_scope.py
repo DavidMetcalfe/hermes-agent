@@ -29,8 +29,11 @@ def test_discover_plugins_skips_load_under_profile_override(tmp_path, monkeypatc
     finally:
         reset_hermes_home_override(token)
 
+    # The manager for the overridden home is never loaded (the #106608 trigger), but the
+    # process-global startup discovery is still joined — skipping that would let a scoped
+    # request race in-flight process-global registration.
     mgr.assert_not_called()
-    join.assert_not_called()
+    join.assert_called_once()
 
 
 def test_discover_plugins_loads_without_override(tmp_path, monkeypatch):
@@ -39,8 +42,9 @@ def test_discover_plugins_loads_without_override(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     with patch.object(P, "get_plugin_manager") as mgr, \
-         patch.object(P, "_join_background_discovery"):
+         patch.object(P, "_join_background_discovery") as join:
         P.discover_plugins()
 
+    join.assert_called_once()
     mgr.assert_called_once()
     mgr.return_value.discover_and_load.assert_called_once()
