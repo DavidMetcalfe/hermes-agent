@@ -11,6 +11,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+import yaml
+from fastapi import HTTPException
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
@@ -73,3 +77,29 @@ def test_discovery_and_cache_are_profile_scoped(tmp_path, monkeypatch):
 
     assert "worker-only" in scoped
     assert "worker-only" not in unscoped
+
+
+@pytest.mark.asyncio
+async def test_profile_only_plugin_asset_resolves_under_profile_scope(tmp_path, monkeypatch):
+    """End-to-end: a plugin present only in the selected profile's dir is both discovered
+    AND served by the profile-scoped static-asset route — the "carry the fix through asset
+    resolution" ask (asset URLs + server resolution carry ``?profile=``)."""
+    from hermes_cli.web_routers import dashboard_ui
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    profile = root / "profiles" / "worker"
+    _write_plugin(profile, "worker-only")
+    (profile / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["worker-only"]}})
+    )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+
+    resp = await dashboard_ui.serve_plugin_asset("worker-only", "dist/index.js", profile="worker")
+    assert resp.status_code == 200
+    assert str(resp.path).endswith("dist/index.js")
+
+    # Unscoped, the profile-only plugin is not discoverable, so its asset 404s.
+    with pytest.raises(HTTPException) as exc:
+        await dashboard_ui.serve_plugin_asset("worker-only", "dist/index.js")
+    assert exc.value.status_code == 404
