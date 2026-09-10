@@ -8,8 +8,10 @@ NTFY_ALLOW_ALL_USERS (dev only), NTFY_HOME_CHANNEL, NTFY_HOME_CHANNEL_NAME.
 Outgoing attachments (issue #46447): a local file is published as the POST body with a
 ``filename`` query param (ntfy's ``X-Filename``; attachment fields ride as query params because
 httpx rejects non-ASCII header values), message text as ``message=`` (``X-Message``); a URL
-attachment publishes with ``attach=`` (``X-Attach``) and an empty body. ntfy.sh caps attachments
-at 15 MB (100 MB total per visitor) and expires them after 3 h.
+attachment publishes with ``attach=`` (``X-Attach``) and an empty body. Attachment size: the
+public ntfy.sh server allows 2 MB per attachment, a self-hosted server's shipped default is
+15 MB — the client cap follows the configured server unless ``extra.attachment_max_mb``
+overrides it. ntfy.sh expires attachments after 3 h.
 Identity: ntfy has no authenticated user; ``title`` is publisher-controlled and NOT used for
 authorization. Each topic is one trusted channel (``user_id`` == topic). Protect it with a read token.
 """
@@ -22,6 +24,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 try:
     import httpx
@@ -44,7 +47,12 @@ class _FatalStreamError(Exception):
 
 DEFAULT_SERVER = "https://ntfy.sh"
 MAX_MESSAGE_LENGTH = 4096  # ntfy message body limit
-MAX_ATTACHMENT_BYTES = 15 * 1024 * 1024  # ntfy.sh attachment limit (server may differ; it re-checks)
+# Attachment caps. The ntfy server default is 15 MB, but the public ntfy.sh allows 2 MB per
+# attachment (20 MB per visitor) — probe: 2 MB accepted, 2 MB + 1 byte rejected with HTTP 413.
+# The server re-checks either way, so the client cap only decides which files fail fast: it must
+# never be more permissive than the server the adapter publishes to.
+DEFAULT_ATTACHMENT_MAX_BYTES = 15 * 1024 * 1024
+PUBLIC_SERVER_ATTACHMENT_MAX_BYTES = 2 * 1024 * 1024
 DEDUP_WINDOW_SECONDS = 300
 DEDUP_MAX_SIZE = 1000
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
@@ -131,10 +139,29 @@ async def _publish_attachment(
         return SendResult(success=False, error=str(e))
 
 
-def _read_attachment(path_value: Any) -> "Tuple[Path, None] | Tuple[None, str]":
+def _attachment_max_bytes(extra: Dict[str, Any], server: str) -> int:
+    """Client-side attachment cap for ``server``: ``extra.attachment_max_mb`` when set (integer
+    MB), else the server's known limit — 2 MB for the public ntfy.sh, 15 MB for a self-hosted
+    server (ntfy's shipped default). A non-numeric override is ignored with a warning rather
+    than failing mid-send; an unusable value must not take the whole send path down.
+    """
+    public = (urlsplit(server).hostname or "").lower() == "ntfy.sh"
+    default = PUBLIC_SERVER_ATTACHMENT_MAX_BYTES if public else DEFAULT_ATTACHMENT_MAX_BYTES
+    configured = extra.get("attachment_max_mb")
+    if configured in (None, ""):
+        return default
+    try:
+        megabytes = int(configured)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric attachment_max_mb=%r", configured)
+        return default
+    return megabytes * 1024 * 1024 if megabytes > 0 else default
+
+
+def _read_attachment(path_value: Any, *, max_bytes: int) -> "Tuple[Path, None] | Tuple[None, str]":
     """``(path, None)`` or ``(None, error)`` for a local attachment input (str or Path
     accepted; the base-class contract is str). Error names the concrete problem:
-    wrong type vs missing/not-a-file vs unreadable vs too large."""
+    wrong type vs missing/not-a-file vs unreadable vs too large (over ``max_bytes``)."""
     if not isinstance(path_value, (str, Path)):
         return None, f"invalid attachment path type: {type(path_value).__name__}"
     path = Path(path_value)
@@ -146,9 +173,9 @@ def _read_attachment(path_value: Any) -> "Tuple[Path, None] | Tuple[None, str]":
         return None, "attachment file not found"
     except OSError as e:
         return None, f"attachment file unreadable: {e}"
-    if size > MAX_ATTACHMENT_BYTES:
-        return None, (f"attachment exceeds the {MAX_ATTACHMENT_BYTES // (1024 * 1024)} MB "
-                      f"ntfy.sh attachment limit ({size} bytes)")
+    if size > max_bytes:
+        return None, (f"attachment exceeds the {max_bytes // (1024 * 1024)} MB "
+                      f"attachment limit ({size} bytes)")
     return path, None
 
 
@@ -411,6 +438,10 @@ class NtfyAdapter(BasePlatformAdapter):
         """Caption for ``message=`` — byte-aware cap to ntfy's message limit."""
         return _cap_to_message_limit(caption, context="ntfy attachment caption")
 
+    def _attachment_limit_bytes(self) -> int:
+        """Fail-fast attachment cap for the configured server (see ``_attachment_max_bytes``)."""
+        return _attachment_max_bytes(self.config.extra or {}, self._server)
+
     def _require_client(self) -> Optional[SendResult]:
         if not self._http_client:
             return SendResult(success=False, error="HTTP client not initialized")
@@ -424,7 +455,7 @@ class NtfyAdapter(BasePlatformAdapter):
         not_ready = self._require_client()
         if not_ready:
             return not_ready
-        path, error = _read_attachment(file_path)
+        path, error = _read_attachment(file_path, max_bytes=self._attachment_limit_bytes())
         if error:
             logger.warning("[%s] Attachment send skipped: %s", self.name, error)
             return SendResult(success=False, error=error)

@@ -313,10 +313,13 @@ class TestSend:
 
 class TestAttachmentSend:
 
-    def _make_adapter(self, topic="hermes-in", publish_topic="", token=""):
+    def _make_adapter(self, topic="hermes-in", publish_topic="", token="", server=None, **extra_kwargs):
         extra: dict = {"topic": topic, "token": token}
         if publish_topic:
             extra["publish_topic"] = publish_topic
+        if server:
+            extra["server"] = server
+        extra.update(extra_kwargs)
         return NtfyAdapter(PlatformConfig(enabled=True, extra=extra))
 
     @staticmethod
@@ -428,7 +431,7 @@ class TestAttachmentSend:
         media = tmp_path / "big.bin"
         media.write_bytes(b"tiny")
         with open(media, "r+b") as f:  # sparse: logical size > limit, ~0 bytes on disk
-            f.truncate(_ntfy.MAX_ATTACHMENT_BYTES + 1)
+            f.truncate(_ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES + 1)
         adapter = self._make_adapter()
         client = self._mock_client()
         adapter._http_client = client
@@ -436,7 +439,40 @@ class TestAttachmentSend:
         result = _run(adapter.send_document("hermes-in", str(media)))
 
         assert result.success is False
-        assert "15 MB" in result.error
+        assert "2 MB" in result.error
+        client.post.assert_not_called()
+
+    def test_send_document_self_hosted_allows_over_public_limit(self, tmp_path):
+        """The cap follows the server: ntfy's shipped self-hosted default is 15 MB, so a file
+        the public server would 413 is fine against a self-hosted one."""
+        media = tmp_path / "big.bin"
+        media.write_bytes(b"tiny")
+        with open(media, "r+b") as f:  # sparse: only the logical size matters here
+            f.truncate(_ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES + 1)
+        adapter = self._make_adapter(server="https://ntfy.example.com")
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is True
+        assert client.post.call_count == 1
+
+    def test_attachment_limit_config_override(self, tmp_path):
+        """``extra.attachment_max_mb`` wins over the server default (self-hosted servers
+        configure their own limits, in both directions)."""
+        media = tmp_path / "big.bin"
+        media.write_bytes(b"tiny")
+        with open(media, "r+b") as f:
+            f.truncate(_ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES + 1)
+        adapter = self._make_adapter(server="https://ntfy.example.com", attachment_max_mb=1)
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is False
+        assert "1 MB" in result.error
         client.post.assert_not_called()
 
     def test_send_document_missing_path_fails_before_post(self):
@@ -584,6 +620,31 @@ class TestAttachmentSend:
         _run(adapter.send_document("hermes-in", str(media)))
 
         assert "Content-Type" not in client.post.call_args[1]["headers"]
+
+
+class TestAttachmentLimitResolution:
+    """``_attachment_max_bytes``: the fail-fast cap must match the publish server (2 MB for the
+    public ntfy.sh — 2 MB accepted / 2 MB + 1 byte HTTP 413 — 15 MB for a self-hosted server's
+    shipped default), with ``extra.attachment_max_mb`` as an explicit override."""
+
+    def test_public_server_uses_ntfy_sh_limit(self):
+        assert _ntfy._attachment_max_bytes({}, "https://ntfy.sh") == \
+            _ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES
+
+    def test_self_hosted_uses_server_default(self):
+        assert _ntfy._attachment_max_bytes({}, "https://ntfy.mydomain.com") == \
+            _ntfy.DEFAULT_ATTACHMENT_MAX_BYTES
+
+    def test_config_override_in_mb(self):
+        assert _ntfy._attachment_max_bytes({"attachment_max_mb": 50}, "https://ntfy.sh") == \
+            50 * 1024 * 1024
+
+    def test_unusable_override_falls_back_to_the_server_limit(self):
+        """A config typo must not take the send path down."""
+        assert _ntfy._attachment_max_bytes({"attachment_max_mb": "big"}, "https://ntfy.sh") == \
+            _ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES
+        assert _ntfy._attachment_max_bytes({"attachment_max_mb": 0}, "https://ntfy.sh") == \
+            _ntfy.PUBLIC_SERVER_ATTACHMENT_MAX_BYTES
 
 
 # ---------------------------------------------------------------------------
