@@ -107,8 +107,10 @@ export function usePlugins(profile = "") {
   // Re-runs when the selected management profile changes so the plugin list and
   // the sidebar tabs it drives follow the selected profile (#46408).
   useEffect(() => {
-    // Drop the per-profile dedupe so the new profile's bundles load even when a
-    // same-named plugin was injected under the previous profile.
+    // Runs BEFORE the asset effect (effects fire in declaration order), so the
+    // new profile's bundles load even when a same-named plugin was injected
+    // under the previous profile. Keep this effect declared above the asset
+    // effect.
     loadedScripts.current = new Set();
     api
       .getPlugins()
