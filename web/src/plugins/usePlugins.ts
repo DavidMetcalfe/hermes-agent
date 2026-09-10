@@ -19,6 +19,21 @@ import {
 
 export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
 
+/** URL a profile switch reloads to. Drops the stale `?profile=` value so the
+ * freshly loaded document boots under the selected profile with no profile-A
+ * execution surface carried over (#46408, review P1 on #107006). */
+export function profileSwitchReloadTarget(
+  href: string,
+  params: URLSearchParams,
+  profile: string,
+): string {
+  params.delete("profile");
+  if (profile) params.set("profile", profile);
+  const qs = params.toString();
+  const base = href.split("#")[0].split("?")[0];
+  return qs ? `${base}?${qs}` : base;
+}
+
 /** Cache slot for a management profile. Plugins differ per selected profile, so
  * the manifest cache must not bleed one profile's list into another (#46408). */
 function manifestCacheKey(profile: string): string {
@@ -85,6 +100,18 @@ export function usePlugins(profile = "") {
   );
   const loadedScripts = useRef<Set<string>>(new Set());
   const [activeProfile, setActiveProfile] = useState(profile);
+  // A profile switch must retire the PREVIOUS profile's plugin execution
+  // authority before the new profile's manifests resolve. Bundles register
+  // into process-global maps (registry.ts `_registered`, slots.ts
+  // `_slotRegistry`) keyed only by plugin/slot name, and a plugin bundle's
+  // arbitrary side effects (listeners, sockets, timers) cannot be undone by
+  // removing its <script> node. Resolving profile B's names against those
+  // maps can resurrect profile A's component (same-name plugin, or B's asset
+  // failing to load), and A-only slot/CSS surfaces would stay live under B.
+  // A full document reload resets the whole JS realm, so defer to it and
+  // freeze plugin loading until it lands (the state reset below stays as the
+  // data-layer safety net for non-plugin state).
+  const [pendingReload, setPendingReload] = useState(false);
 
   // Adjusting state when the selected profile changes. A hook cannot remount, so
   // reset the per-profile plugin state during render (React's "adjust state when
@@ -99,19 +126,40 @@ export function usePlugins(profile = "") {
     setManifests(cached ?? []);
     setPlugins([]);
     setLoading(!canSeedLoadedFromCache(cached));
+    // The render-phase update re-renders before effects commit, so the reload
+    // effect below is driven by this flag, not by comparing profile/activeProfile
+    // (which are already equal by the time effects run).
+    setPendingReload(true);
   }
+
+  // Full document reload on management-profile change — retires the previous
+  // profile's plugin execution generation before the new profile's manifests
+  // resolve (#46408, review P1 on #107006). window is read directly (not the
+  // render props) so the target always reflects the CURRENT document URL.
+  useEffect(() => {
+    if (!pendingReload) return;
+    window.location.assign(
+      profileSwitchReloadTarget(
+        window.location.href,
+        new URLSearchParams(window.location.search),
+        profile,
+      ),
+    );
+  }, [pendingReload, profile]);
 
   // Always re-fetch in the background to keep the cache fresh.
   // This handles: new plugins added, plugins removed, manifest changes.
   // setManifests(list) will update routes if the server list differs from cache.
   // Re-runs when the selected management profile changes so the plugin list and
-  // the sidebar tabs it drives follow the selected profile (#46408).
+  // the sidebar tabs it drives follow the selected profile (#46408). pendingReload
+  // only ever changes together with profile, and gates the body instead.
   useEffect(() => {
     // Runs BEFORE the asset effect (effects fire in declaration order), so the
     // new profile's bundles load even when a same-named plugin was injected
     // under the previous profile. Keep this effect declared above the asset
     // effect.
     loadedScripts.current = new Set();
+    if (pendingReload) return; // reload owns the switch; nothing to fetch
     api
       .getPlugins()
       .then((list) => {
@@ -120,11 +168,11 @@ export function usePlugins(profile = "") {
         if (list.length === 0) setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [profile]);
+  }, [profile, pendingReload]);
 
   // Load plugin assets when manifests arrive.
   useEffect(() => {
-    if (manifests.length === 0) return;
+    if (pendingReload || manifests.length === 0) return;
 
     const injectedScripts: HTMLScriptElement[] = [];
     // Assets load via <script src>/<link href>, which cannot attach the profile
@@ -198,7 +246,7 @@ export function usePlugins(profile = "") {
         }
       }
     };
-  }, [manifests, profile]);
+  }, [manifests, profile, pendingReload]);
 
   // Listen for plugin registrations and resolve them against manifests.
   useEffect(() => {
