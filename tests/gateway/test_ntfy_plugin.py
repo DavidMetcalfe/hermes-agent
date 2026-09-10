@@ -428,6 +428,26 @@ class TestAttachmentSend:
         assert result.success is False
         client.post.assert_not_called()
 
+    def test_send_document_directory_path_fails_before_post(self, tmp_path):
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(tmp_path)))
+
+        assert result.success is False
+        client.post.assert_not_called()
+
+    def test_send_document_none_path_fails_not_raises(self):
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", None))
+
+        assert result.success is False
+        client.post.assert_not_called()
+
     def test_send_image_url_uses_attach_param(self):
         adapter = self._make_adapter()
         client = self._mock_client()

@@ -134,9 +134,13 @@ async def _publish_attachment(
 def _read_attachment(path_value: Any) -> "Tuple[Path, None] | Tuple[None, str]":
     """``(path, None)`` or ``(None, error)`` for a local attachment input (str or Path
     accepted; the base-class contract is str). Error names the concrete problem:
-    missing vs unreadable vs too large."""
+    wrong type vs missing/not-a-file vs unreadable vs too large."""
+    if not isinstance(path_value, (str, Path)):
+        return None, f"invalid attachment path type: {type(path_value).__name__}"
     path = Path(path_value)
     try:
+        if not path.is_file():
+            return None, "attachment file not found or is not a regular file"
         size = path.stat().st_size
     except FileNotFoundError:
         return None, "attachment file not found"
@@ -544,11 +548,16 @@ async def _standalone_send(
     if files:
         caption = _cap_to_message_limit(
             (message or "").strip() or None, context="ntfy standalone")
+        # Validate every attachment BEFORE posting any, so a bad file in a batch
+        # doesn't leave a partial delivery.
+        read_paths = []
+        for path_value, _is_voice in files:
+            path, error = _read_attachment(path_value)
+            if error:
+                return {"error": f"ntfy standalone send: {error}"}
+            read_paths.append(path)
         async with httpx.AsyncClient(timeout=120.0) as client:
-            for index, (path_value, _is_voice) in enumerate(files):
-                path, error = _read_attachment(path_value)
-                if error:
-                    return {"error": f"ntfy standalone send: {error}"}
+            for index, path in enumerate(read_paths):
                 params = _attachment_fields(
                     message=caption if index == 0 else None, file_name=path.name)
                 headers = _attachment_headers(token, markdown)
