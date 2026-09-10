@@ -477,11 +477,13 @@ def _dashboard_plugin_search_dirs() -> List[tuple]:
     # ``seen_names`` dedupe below keeps profile-local plugins (if any) authoritative over same-named root
     # plugins.
     #
-    # Also scan the task-local home (the selected management profile, ``?profile=<name>``) because a
-    # profile-scoped ``install`` writes there; without it the newly installed plugin is orphaned from
-    # discovery (issue #46408). Deduped against the process + root homes.
-    user_plugin_roots = [get_process_hermes_home() / "plugins"]
-    for candidate in (get_hermes_home() / "plugins", get_default_hermes_root() / "plugins"):
+    # Scan the task-local home (the selected management profile, ``?profile=<name>``) FIRST so the
+    # selected profile's own plugins win over same-named process/root ones; a profile-scoped
+    # ``install`` writes there, so without it the plugin is also orphaned from discovery (#46408).
+    # Then the process launch home + default root, so #87197 still holds (process-home plugins stay
+    # visible under a scope). Deduped by resolved path.
+    user_plugin_roots = [get_hermes_home() / "plugins"]
+    for candidate in (get_process_hermes_home() / "plugins", get_default_hermes_root() / "plugins"):
         if all(candidate.resolve(strict=False) != existing.resolve(strict=False) for existing in user_plugin_roots):
             user_plugin_roots.append(candidate)
     search_dirs = [(d, "user") for d in user_plugin_roots]

@@ -324,32 +324,39 @@ _PLUGIN_ASSET_CONTENT_TYPES = {
 
 
 @router.get("/dashboard-plugins/{plugin_name}/{file_path:path}")
-async def serve_plugin_asset(plugin_name: str, file_path: str):
+async def serve_plugin_asset(plugin_name: str, file_path: str, profile: Optional[str] = None):
     """Serve static assets from a dashboard plugin's ``dashboard/`` directory.
 
     Unauthenticated on purpose: the SPA loads plugin JS via ``<script src>`` and CSS
-    via ``<link href>``, which cannot attach an auth header. Hence the suffix
+    via ``<link href>``, which cannot attach an auth header; the SPA passes the selected
+    management profile as ``?profile=<name>`` instead. Hence the suffix
     allowlist — user plugins ship a ``plugin_api.py`` backend the browser never
     fetches, and without it anyone on the loopback port could curl a private
     plugin's source. Path traversal is blocked via ``resolve().is_relative_to()``;
     user plugins must be enabled (bundled ones not disabled) (GHSA-mcfc-hp25-cjv7).
 
+    Scoped to ``profile`` so a plugin installed under the selected profile resolves
+    there rather than 404ing against the process home (#46408).
+
     See #46435.
     """
-    plugins = _get_dashboard_plugins()
-    plugin = next((p for p in plugins if p["name"] == plugin_name), None)
-    if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
-        raise HTTPException(status_code=404, detail="Plugin not found")
+    def _run():
+        plugins = _get_dashboard_plugins()
+        plugin = next((p for p in plugins if p["name"] == plugin_name), None)
+        if not plugin or not _plugin_activated(plugin, *_plugin_enable_sets()):
+            raise HTTPException(status_code=404, detail="Plugin not found")
 
-    base = Path(plugin["_dir"])
-    target = (base / file_path).resolve()
+        base = Path(plugin["_dir"])
+        target = (base / file_path).resolve()
 
-    if not target.is_relative_to(base.resolve()):
-        raise HTTPException(status_code=403, detail="Path traversal blocked")
-    if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=404, detail="File not found")
+        if not target.is_relative_to(base.resolve()):
+            raise HTTPException(status_code=403, detail="Path traversal blocked")
+        if not target.exists() or not target.is_file():
+            raise HTTPException(status_code=404, detail="File not found")
 
-    media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
-    if media_type is None:
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(target, media_type=media_type, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+        media_type = _PLUGIN_ASSET_CONTENT_TYPES.get(target.suffix.lower())
+        if media_type is None:
+            raise HTTPException(status_code=404, detail="File not found")
+        return FileResponse(target, media_type=media_type, headers={"Cache-Control": "no-store, no-cache, must-revalidate"})
+
+    return await scoped_to_thread(profile, _run)

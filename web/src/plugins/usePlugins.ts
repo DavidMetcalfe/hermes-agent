@@ -19,9 +19,15 @@ import {
 
 export const MANIFEST_CACHE_KEY = "hermes:plugin-manifests";
 
-export function getCachedManifests(): PluginManifest[] | null {
+/** Cache slot for a management profile. Plugins differ per selected profile, so
+ * the manifest cache must not bleed one profile's list into another (#46408). */
+function manifestCacheKey(profile: string): string {
+  return profile ? `${MANIFEST_CACHE_KEY}:${profile}` : MANIFEST_CACHE_KEY;
+}
+
+export function getCachedManifests(profile = ""): PluginManifest[] | null {
   try {
-    const raw = sessionStorage.getItem(MANIFEST_CACHE_KEY);
+    const raw = sessionStorage.getItem(manifestCacheKey(profile));
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as PluginManifest[]) : null;
@@ -30,9 +36,9 @@ export function getCachedManifests(): PluginManifest[] | null {
   }
 }
 
-export function cacheManifests(manifests: PluginManifest[]): void {
+export function cacheManifests(manifests: PluginManifest[], profile = ""): void {
   try {
-    sessionStorage.setItem(MANIFEST_CACHE_KEY, JSON.stringify(manifests));
+    sessionStorage.setItem(manifestCacheKey(profile), JSON.stringify(manifests));
   } catch {
     // sessionStorage unavailable (private browsing, storage full, etc.)
   }
@@ -57,13 +63,13 @@ export function canSeedLoadedFromCache(
   return !cached.some((m) => m.tab?.override === "/chat");
 }
 
-export function usePlugins() {
+export function usePlugins(profile = "") {
   // Lazy initialisers run once at mount — safe to read sessionStorage here.
   // This avoids the "cannot access ref during render" lint error that would
   // occur if we stored the cached value in a useRef and read .current in the
   // useState initial value expression.
   const [manifests, setManifests] = useState<PluginManifest[]>(
-    () => getCachedManifests() ?? [],
+    () => getCachedManifests(profile) ?? [],
   );
   const [plugins, setPlugins] = useState<RegisteredPlugin[]>([]);
   // Start loading=false when the cache has manifests so plugin routes are
@@ -75,34 +81,40 @@ export function usePlugins() {
   // loading=true — App.tsx's pluginsLoading gate around the persistent
   // ChatPage host is load-bearing (see canSeedLoadedFromCache).
   const [loading, setLoading] = useState<boolean>(
-    () => !canSeedLoadedFromCache(getCachedManifests()),
+    () => !canSeedLoadedFromCache(getCachedManifests(profile)),
   );
   const loadedScripts = useRef<Set<string>>(new Set());
 
   // Always re-fetch in the background to keep the cache fresh.
   // This handles: new plugins added, plugins removed, manifest changes.
   // setManifests(list) will update routes if the server list differs from cache.
+  // Re-runs when the selected management profile changes so the plugin list
+  // (and the sidebar tabs it drives) follows the selected profile (#46408).
   useEffect(() => {
     api
       .getPlugins()
       .then((list) => {
-        cacheManifests(list);
+        cacheManifests(list, profile);
         setManifests(list);
         if (list.length === 0) setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [profile]);
 
   // Load plugin assets when manifests arrive.
   useEffect(() => {
     if (manifests.length === 0) return;
 
     const injectedScripts: HTMLScriptElement[] = [];
+    // Assets load via <script src>/<link href>, which cannot attach the profile
+    // header; pass the selected management profile as ?profile= so a plugin
+    // installed only under that profile resolves instead of 404ing (#46408).
+    const profileQuery = profile ? `?profile=${encodeURIComponent(profile)}` : "";
 
     for (const manifest of manifests) {
       // Inject CSS if specified.
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}${profileQuery}`;
         if (!document.querySelector(`link[href="${cssUrl}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
@@ -115,12 +127,13 @@ export function usePlugins() {
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.
       const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
+      const assetUrl = `${baseUrl}${profileQuery}`;
       const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
-        : baseUrl;
+        ? `${assetUrl}${profileQuery ? "&" : "?"}hermes_dv=${Date.now()}`
+        : assetUrl;
       if (!import.meta.env.DEV) {
-        if (loadedScripts.current.has(baseUrl)) continue;
-        loadedScripts.current.add(baseUrl);
+        if (loadedScripts.current.has(assetUrl)) continue;
+        loadedScripts.current.add(assetUrl);
       }
 
       const script = document.createElement("script");
@@ -164,7 +177,7 @@ export function usePlugins() {
         }
       }
     };
-  }, [manifests]);
+  }, [manifests, profile]);
 
   // Listen for plugin registrations and resolve them against manifests.
   useEffect(() => {
