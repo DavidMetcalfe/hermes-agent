@@ -286,6 +286,212 @@ class TestSend:
 
 
 # ---------------------------------------------------------------------------
+# 7b. Attachment sends (issue #46447)
+# ---------------------------------------------------------------------------
+
+
+class TestAttachmentSend:
+
+    def _make_adapter(self, topic="hermes-in", publish_topic="", token=""):
+        extra: dict = {"topic": topic, "token": token}
+        if publish_topic:
+            extra["publish_topic"] = publish_topic
+        return NtfyAdapter(PlatformConfig(enabled=True, extra=extra))
+
+    @staticmethod
+    def _mock_client(status_code=200, msg_id="att-123"):
+        mock_resp = MagicMock()
+        mock_resp.status_code = status_code
+        mock_resp.json.return_value = {"id": msg_id}
+        mock_resp.text = "server error"
+        client = AsyncMock()
+        client.post = AsyncMock(return_value=mock_resp)
+        return client
+
+    def test_send_document_string_path(self, tmp_path):
+        """Real callers pass str paths (base-class contract): bytes body, filename
+        param, echo tag, and no text/plain content type (the server sniffs)."""
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        media = tmp_path / "report.pdf"
+        media.write_bytes(b"%PDF-1.4 tiny")
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media), caption="Here"))
+
+        assert result.success is True
+        assert result.message_id == "att-123"
+        call = client.post.call_args
+        assert call[0][0].endswith("/hermes-out")
+        assert call[1]["content"] == b"%PDF-1.4 tiny"
+        assert call[1]["params"]["filename"] == "report.pdf"
+        assert call[1]["params"]["message"] == "Here"
+        assert call[1]["headers"]["X-Tags"] == _ntfy._ECHO_TAG
+        assert "Content-Type" not in call[1]["headers"]
+
+    def test_send_document_accepts_path_object(self, tmp_path):
+        media = tmp_path / "doc.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", media))
+
+        assert result.success is True
+        assert client.post.call_args[1]["params"]["filename"] == "doc.txt"
+
+    def test_send_document_caption_survives_non_ascii(self, tmp_path):
+        """httpx rejects non-ASCII header values (UnicodeEncodeError); captions ride
+        as UTF-8 query params instead — an emoji caption must round-trip."""
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media), caption="héllo 🎉"))
+
+        assert result.success is True
+        assert client.post.call_args[1]["params"]["message"] == "héllo 🎉"
+
+    def test_send_document_without_caption_has_no_message_param(self, tmp_path):
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is True
+        assert "message" not in client.post.call_args[1]["params"]
+
+    def test_send_document_file_name_override(self, tmp_path):
+        media = tmp_path / "blob.bin"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media), file_name="pretty-name.png"))
+
+        assert result.success is True
+        assert client.post.call_args[1]["params"]["filename"] == "pretty-name.png"
+
+    def test_send_document_oversized_file_fails_before_post(self, tmp_path):
+        media = tmp_path / "big.bin"
+        media.write_bytes(b"tiny")
+        with open(media, "r+b") as f:  # sparse: logical size > limit, ~0 bytes on disk
+            f.truncate(_ntfy.MAX_ATTACHMENT_BYTES + 1)
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is False
+        assert "15 MB" in result.error
+        client.post.assert_not_called()
+
+    def test_send_document_missing_path_fails_before_post(self):
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", "/nonexistent/path/f.bin"))
+
+        assert result.success is False
+        client.post.assert_not_called()
+
+    def test_send_image_url_uses_attach_param(self):
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_image("hermes-in", "https://example.com/flower.jpg"))
+
+        assert result.success is True
+        call = client.post.call_args
+        assert call[1]["params"]["attach"] == "https://example.com/flower.jpg"
+        assert call[1]["content"] in (b"", None)
+
+    def test_send_image_invalid_url_fails_without_post(self):
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_image("hermes-in", "ftp://example.com/f.jpg"))
+
+        assert result.success is False
+        client.post.assert_not_called()
+
+    def test_send_voice_posts_audio_bytes(self, tmp_path):
+        media = tmp_path / "note.ogg"
+        media.write_bytes(b"OggS")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_voice("hermes-in", str(media)))
+
+        assert result.success is True
+        call = client.post.call_args
+        assert call[1]["content"] == b"OggS"
+        assert call[1]["params"]["filename"] == "note.ogg"
+
+    def test_attachment_metadata_publish_topic_override(self, tmp_path):
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter(topic="hermes-in", publish_topic="hermes-out")
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document(
+            "hermes-in", str(media), metadata={"publish_topic": "override-out"}))
+
+        assert result.success is True
+        assert client.post.call_args[0][0].endswith("/override-out")
+
+    def test_tokenless_adapter_omits_authorization_header(self, tmp_path):
+        """Tokenless self-hosted setups must not get a malformed empty
+        Authorization header — mirroring the text-send behavior."""
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter(token="")
+        client = self._mock_client()
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is True
+        assert "Authorization" not in client.post.call_args[1]["headers"]
+
+    def test_attachment_http_500_is_failure_not_raise(self, tmp_path):
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client(status_code=500)
+        adapter._http_client = client
+
+        result = _run(adapter.send_document("hermes-in", str(media)))
+
+        assert result.success is False
+        assert "500" in result.error
+
+    def test_attachment_markdown_hint_not_text_content_type(self, tmp_path):
+        media = tmp_path / "c.txt"
+        media.write_bytes(b"x")
+        adapter = self._make_adapter()
+        client = self._mock_client()
+        adapter._http_client = client
+
+        _run(adapter.send_document("hermes-in", str(media)))
+
+        assert "Content-Type" not in client.post.call_args[1]["headers"]
+
+
+# ---------------------------------------------------------------------------
 # 8. Inbound message processing (identity invariant — security-critical)
 # ---------------------------------------------------------------------------
 
@@ -429,6 +635,79 @@ class TestStandaloneSend:
 
         headers = mock_client.post.call_args[1]["headers"]
         assert headers.get("X-Tags") == _ntfy._ECHO_TAG
+
+    def test_standalone_send_media_file_with_caption(self, monkeypatch, tmp_path):
+        """Cron media delivery: the file publishes as an attachment (body upload +
+        ``filename`` param) and the text rides as the caption on that attachment."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+        media_file = tmp_path / "photo.jpg"
+        media_file.write_bytes(b"\xff\xd8jpg")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "att-1"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            result = _run(_standalone_send(
+                pconfig, "", "See the photo", media_files=[(str(media_file), False)]))
+
+        assert result.get("success") is True
+        assert mock_client.post.call_count == 1
+        params = mock_client.post.call_args[1]["params"]
+        headers = mock_client.post.call_args[1]["headers"]
+        assert params.get("filename") == "photo.jpg"
+        assert params.get("message") == "See the photo"
+        assert headers.get("X-Tags") == _ntfy._ECHO_TAG
+        assert mock_client.post.call_args[1]["content"] == b"\xff\xd8jpg"
+
+    def test_standalone_send_caption_on_first_attachment_only(self, monkeypatch, tmp_path):
+        """Multi-file cron delivery: the caption must not be duplicated onto every
+        attachment (association beyond one file is ambiguous)."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+        first, second = tmp_path / "a.png", tmp_path / "b.png"
+        first.write_bytes(b"A")
+        second.write_bytes(b"B")
+
+        responses = []
+        for msg_id in ("att-1", "att-2"):
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.json.return_value = {"id": msg_id}
+            responses.append(resp)
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(side_effect=responses)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            result = _run(_standalone_send(
+                pconfig, "", "two files",
+                media_files=[(str(first), False), (str(second), False)]))
+
+        assert result.get("success") is True
+        first_call, second_call = mock_client.post.call_args_list
+        assert first_call[1]["params"].get("message") == "two files"
+        assert "message" not in second_call[1]["params"]
+        assert first_call[1]["params"].get("filename") == "a.png"
+        assert second_call[1]["params"].get("filename") == "b.png"
+
+    def test_standalone_send_missing_media_file_errors(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+        result = _run(_standalone_send(
+            pconfig, "", "caption", media_files=[(str(tmp_path / "gone.bin"), False)]))
+        assert "error" in result
 
 
 # ---------------------------------------------------------------------------
