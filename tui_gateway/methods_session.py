@@ -306,16 +306,25 @@ def _seed_row(record: dict) -> None:
 
 def _create_overrides(params: dict) -> tuple:
     """PER-SESSION (model, reasoning, service_tier) overrides from the composer — never a global config
-    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("")."""
+    write. ``fast`` presence is the contract: omitted inherits, true pins priority, false pins normal ("").
+
+    A reasoning_effort that merely restates the profile's global ``agent.reasoning_effort`` is NOT a
+    user choice — the Desktop composer seeds its effort atom from that default and ships it on every
+    session.create. Shipping it as a pin would shadow ``agent.reasoning_overrides`` per-model config
+    for the whole session (e.g. a gateway model that must run effort "none" with tools). Only an
+    effort that DIFFERS from the global default is a real pin.
+    """
     create_model = _str_param(params, "model")
     model_override = None
     if create_model:
         model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
     reasoning_override = None
     if effort := _str_param(params, "reasoning_effort"):
-        with contextlib.suppress(Exception):
-            from hermes_constants import parse_reasoning_effort
-            reasoning_override = parse_reasoning_effort(effort)
+        global_effort = str(((_load_cfg() or {}).get("agent") or {}).get("reasoning_effort", "") or "").strip().lower()
+        if effort.strip().lower() != global_effort:
+            with contextlib.suppress(Exception):
+                from hermes_constants import parse_reasoning_effort
+                reasoning_override = parse_reasoning_effort(effort)
     service_tier_override = None
     if "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""
