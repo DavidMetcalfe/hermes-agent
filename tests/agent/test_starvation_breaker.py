@@ -108,14 +108,27 @@ class TestStarvationDetection:
         ) is False
 
     def test_unclosed_think_block_only_content_counts_as_empty(self):
-        """DeepSeek-style endpoints inline ``智`` in content; a response truncated
-        mid-thought yields 'content' that is only an unclosed think tag."""
+        """DeepSeek-style endpoints inline <think> tags in content; a response truncated
+        mid-thought yields 'content' that is only an unclosed think tag. Callers
+        strip think blocks before the has_visible_content check, so this shape
+        classifies as starvation (Flash round-1 BLOCKER 2)."""
+        agent = _agent()
+        assert guard.is_output_starvation(
+            agent, finish_reason="length",
+            response=_response(reasoning_tokens=0, completion_tokens=1_000),
+            has_visible_content=False,  # after _strip_think_blocks("<think>...partial")
+            has_tool_calls=False,
+        ) is True
+
+    def test_truncating_finish_with_unreported_reasoning_is_starvation(self):
+        """Gateway omits the reasoning breakdown (reported 0) but completion>0 on a
+        truncating finish reason with no content: the cap consumed the output
+        (GPT-OSS round-1 requested documentation of this exact shape)."""
         agent = _agent()
         assert guard.is_output_starvation(
             agent, finish_reason="length",
             response=_response(reasoning_tokens=0, completion_tokens=1_000),
             has_visible_content=False, has_tool_calls=False,
-            visible_content_preview="<智>partial reasoning without a closing tag",
         ) is True
 
 

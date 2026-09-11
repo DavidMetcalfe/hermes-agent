@@ -90,13 +90,35 @@ def _run_ladder(agent, finish_reason="max_tokens"):
 
 
 class TestLadderShortCircuit:
-    def test_starved_response_sets_flag_and_skips_nothing_on_first_pass(self):
-        """First starved empty: flag set, nudge ladder still runs its normal order
-        (the nudge happens only for post-tool empties; our minimal history has no
-        tool rows, so the ladder proceeds to prefill/retry handling)."""
-        agent = _agent()
-        verdict = _run_ladder(agent)
+    def test_starved_post_tool_response_skips_nudge(self):
+        """The primary trigger shape: tool result immediately before the starved
+        empty. Legacy ladder would append the "(empty)" + synthetic-user nudge
+        rows (prompt mutation, cache break); starved streaks must skip it
+        (Flash round-1 BLOCKER 1)."""
+        agent = _agent(_post_tool_empty_retried=False)
+        messages = [
+            {"role": "user", "content": "run the thing"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "t1"}]},
+            {"role": "tool", "tool_call_id": "t1", "content": "ok"},
+        ]
+        verdict = recover_empty_response(
+            agent,
+            assistant_message=_assistant_message(),
+            response=_starved_response(),
+            finish_reason="max_tokens",
+            final_response="",
+            messages=messages,
+            api_messages=[],
+            conversation_history=[],
+            active_system_prompt=None,
+            api_call_count=2,
+            turn_exit_reason=None,
+            preflight_compression_blocked=False,
+        )
         assert getattr(agent, "_output_starvation_detected", False) is True
+        # No synthetic nudge rows appended: history length unchanged.
+        assert len(messages) == 3
+        assert not any(m.get("_empty_recovery_synthetic") for m in messages)
 
     def test_starved_streak_suppresses_thinking_prefill(self):
         agent = _agent()

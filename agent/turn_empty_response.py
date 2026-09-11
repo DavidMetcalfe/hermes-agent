@@ -184,12 +184,13 @@ def recover_empty_response(
     # Server-side output-cap starvation: the endpoint truncated the response before
     # any usable output (reasoning consumed the cap). Nudging/prefilling would
     # mutate the prompt (breaking the cached prefix) and re-bill the full input for
-    # a guaranteed-identical truncation — skip straight to budgeted retries.
+    # a guaranteed-identical truncation — skip the nudge/prefill rounds below and
+    # run the budgeted retry path directly.
     if _empty_guard.is_output_starvation(
         agent,
         finish_reason=finish_reason,
         response=response,
-        has_visible_content=bool((final_response or "").strip()),
+        has_visible_content=bool(agent._strip_think_blocks(final_response or "").strip()),
         has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
     ):
         agent._output_starvation_detected = True
@@ -197,10 +198,6 @@ def recover_empty_response(
             "Output-cap starvation detected (finish_reason=%s, no content/tool calls) — "
             "skipping nudge/prefill, budgeted retry only (model=%s provider=%s)",
             finish_reason, agent.model, agent.provider,
-        )
-        agent._buffer_status(
-            "⚠️ Endpoint truncated the response at its output cap — a retry may help once, "
-            "but set providers.<name>.extra_body.max_tokens to raise the cap"
         )
 
     # Prior turn had real content + ONLY housekeeping tools: model is done, reuse it.
@@ -214,18 +211,22 @@ def recover_empty_response(
         agent._last_content_with_tools = None
         agent._last_content_tools_all_housekeeping = False
         agent._empty_content_retries = 0
+        agent._output_starvation_detected = False
         # Do NOT modify the assistant message content (injected text poisoned history).
         final_response = agent._strip_think_blocks(fallback).strip()
         agent._response_was_previewed = True
         return _verdict("break")
 
     # Post-tool-call empty (no prior content, or only mid-task narration): nudge once.
+    # Proven output-cap starvation NEVER nudges: the synthetic rows would mutate the
+    # prompt (breaking the cached prefix) and the retry truncates identically anyway.
     _prior_was_tool = any(m.get("role") == "tool" for m in messages[-5:])
-    # Ollama puts <think> in content, not reasoning_content, so _has_structured misses
+    # Ollama puts inline <think> tags in content, not reasoning_content, so _has_structured misses
     # it; detect here to route to prefill.
     _has_inline_thinking = bool(_INLINE_THINK_RE.search(final_response or ""))
     if (
         _prior_was_tool
+        and not getattr(agent, "_output_starvation_detected", False)
         and not getattr(agent, "_post_tool_empty_retried", False)
         and not _has_inline_thinking  # thinking model still working — let prefill handle
     ):
@@ -277,7 +278,7 @@ def recover_empty_response(
     # truncation is deterministic while the cap is in effect).
     if getattr(agent, "_output_starvation_detected", False) and _empty_guard.is_output_starvation(
         agent, finish_reason=finish_reason, response=response,
-        has_visible_content=bool((final_response or "").strip()),
+        has_visible_content=bool(agent._strip_think_blocks(final_response or "").strip()),
         has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
     ):
         _empty_candidate = _truly_empty or _has_structured
@@ -285,6 +286,14 @@ def recover_empty_response(
             # Suppress prefill continuation for starved streaks: the reasoning IS
             # the truncated output, not a missing-answer state.
             agent._thinking_prefill_retries = 2
+        # Surface the escape hatch only when actually entering the starved retry
+        # path (detection alone doesn't warn — prior-turn reuse may resolve the
+        # turn without any truncation-facing UX).
+        _provider_key = (getattr(agent, "provider", "") or "custom").split(":")[-1]
+        agent._buffer_status(
+            f"⚠️ Endpoint truncated the response at its output cap — set "
+            f"providers.{_provider_key}.extra_body.max_tokens to raise the cap"
+        )
     action, interrupt_result, _deterministic_empty = _retry_empty(
         agent, response, finish_reason, _empty_candidate, messages=messages,
         conversation_history=conversation_history, api_call_count=api_call_count,
@@ -314,6 +323,7 @@ def recover_empty_response(
         if agent._try_activate_fallback():
             active_system_prompt = _sync_failover_system_message(agent, api_messages, active_system_prompt)
             agent._empty_content_retries = 0
+            agent._output_starvation_detected = False
             agent._buffer_status(f"↻ Switched to fallback: {agent.model} " f"({agent.provider})")
             logger.info(
                 "Fallback activated after empty responses: now using %s on %s",
