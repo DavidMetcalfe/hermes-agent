@@ -148,3 +148,34 @@ class TestIntegrationPricingEntry:
         assert entry is not None
         assert entry.input_cost_per_million == Decimal("0.75")
         assert entry.output_cost_per_million == Decimal("3.75")
+
+    def test_per_million_shape_survives_the_endpoint_probe_path(self):
+        """The nested shape must still price BOTH rates after the `/models` probe
+        has filtered the pricing dict.
+
+        `fetch_endpoint_model_metadata` builds its cache through
+        `_parse_models_payload` -> `_extract_pricing`, which keeps only the keys
+        whose spelling is in its alias map. A key it drops is unpriced no matter
+        what this module's alias chains support, so the contract is asserted
+        against that real path rather than a hand-built metadata dict.
+        """
+        from agent.model_metadata import _parse_models_payload
+        from agent.usage_pricing import _pricing_entry_from_metadata
+
+        metadata = _parse_models_payload({
+            "data": [{
+                "id": "model-x",
+                "pricing": {
+                    "global": {"prompt": 0.75, "completions": 3.75, "input_cache_read": 0.075},
+                    "regional_increase_percent": 0.1,
+                },
+            }],
+        })
+        entry = _pricing_entry_from_metadata(
+            metadata, "model-x",
+            source_url="https://g.example/v1/models", pricing_version="test",
+        )
+        assert entry is not None
+        assert entry.input_cost_per_million == Decimal("0.75")
+        assert entry.output_cost_per_million == Decimal("3.75")
+        assert entry.cache_read_cost_per_million == Decimal("0.075")
