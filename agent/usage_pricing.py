@@ -420,8 +420,7 @@ def _pricing_entry_from_metadata(
 
     # Shape tolerance: endpoints disagree on units ($/token vs $/M), key spellings
     # (completion/completions), and nesting ({global: {...}}). extract_pricing_fields
-    # infers the unit per value and returns dollars-per-token; multiply by 1M here
-    # for the PricingEntry's per-million fields.
+    # infers the container unit and returns dollars-per-MILLION directly.
     from agent.pricing_shape import extract_pricing_fields
 
     fields = extract_pricing_fields(pricing)
@@ -429,15 +428,12 @@ def _pricing_entry_from_metadata(
     completion = fields["completion"]
     request = fields["request"]
 
-    def per_million(value: Optional[Decimal]) -> Optional[Decimal]:
-        return None if value is None else value * _ONE_MILLION
-
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(
-        input_cost_per_million=per_million(prompt), output_cost_per_million=per_million(completion),
-        cache_read_cost_per_million=per_million(fields["cache_read"]),
-        cache_write_cost_per_million=per_million(fields["cache_write"]),
+        input_cost_per_million=prompt, output_cost_per_million=completion,
+        cache_read_cost_per_million=fields["cache_read"],
+        cache_write_cost_per_million=fields["cache_write"],
         request_cost=request, source="provider_models_api", source_url=source_url,
         pricing_version=pricing_version, fetched_at=_UTC_NOW(),
     )
