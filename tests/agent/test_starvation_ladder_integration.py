@@ -146,6 +146,36 @@ class TestLadderShortCircuit:
         assert guard.starvation_retry_budget(agent, finish_reason="max_tokens") == 0
 
 
+class TestStaleFlagReset:
+    def test_benign_empty_after_starved_entry_resets_flag(self):
+        """Flag reflects the CURRENT response (Flash R2 finding 1): a starved
+        response followed by a benign (finish_reason=stop) empty must reset the
+        flag so the later streak's nudge is not suppressed."""
+        agent = _agent(_output_starvation_detected=True)  # stale from a prior streak
+        _run_ladder(agent, finish_reason="stop")
+        assert getattr(agent, "_output_starvation_detected", False) is False
+
+    def test_non_starved_entry_clears_flag_even_with_truncating_reason_shape(self):
+        """A response with content present + truncating reason is NOT starvation:
+        the flag must flip False on that entry (prior-turn reuse then works)."""
+        agent = _agent(_output_starvation_detected=True)
+        verdict = recover_empty_response(
+            agent,
+            assistant_message=_assistant_message(),
+            response=_starved_response(),
+            finish_reason="length",
+            final_response="real content survived truncation",
+            messages=[{"role": "user", "content": "task"}],
+            api_messages=[],
+            conversation_history=[],
+            active_system_prompt=None,
+            api_call_count=1,
+            turn_exit_reason=None,
+            preflight_compression_blocked=False,
+        )
+        assert getattr(agent, "_output_starvation_detected", False) is False
+
+
 class TestNoRegressionOnBenignEmpties:
     def test_stop_finish_empty_never_sets_starvation_flag(self):
         agent = _agent()

@@ -185,15 +185,18 @@ def recover_empty_response(
     # any usable output (reasoning consumed the cap). Nudging/prefilling would
     # mutate the prompt (breaking the cached prefix) and re-bill the full input for
     # a guaranteed-identical truncation — skip the nudge/prefill rounds below and
-    # run the budgeted retry path directly.
-    if _empty_guard.is_output_starvation(
+    # run the budgeted retry path directly. The flag is ASSIGNED (not one-way set)
+    # so every ladder entry reflects the CURRENT response and a stale True can
+    # never suppress a later benign streak's nudge.
+    _starved_now = _empty_guard.is_output_starvation(
         agent,
         finish_reason=finish_reason,
         response=response,
         has_visible_content=bool(agent._strip_think_blocks(final_response or "").strip()),
         has_tool_calls=bool(getattr(assistant_message, "tool_calls", None)),
-    ):
-        agent._output_starvation_detected = True
+    )
+    agent._output_starvation_detected = _starved_now
+    if _starved_now:
         logger.warning(
             "Output-cap starvation detected (finish_reason=%s, no content/tool calls) — "
             "skipping nudge/prefill, budgeted retry only (model=%s provider=%s)",
