@@ -91,3 +91,29 @@ def test_model_override_and_service_tier_untouched(overrides, cfg_effort):
     assert model == {"model": "gpt-5.6-sol", "provider": "assemblyai"}
     assert reasoning is None
     assert tier == "priority"
+
+
+def _other_profile(tmp_path, effort: str):
+    """A real secondary-profile home (its own config.yaml) — the create TARGETS this profile."""
+    home = tmp_path / "other-profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(f"agent:\n  reasoning_effort: {effort}\n")
+    return home
+
+
+def test_secondary_profile_echo_is_not_a_pin(tmp_path, overrides, cfg_effort):
+    """App-global remote mode: one backend serves several profiles. The shipped value is the TARGET
+    profile's default, so it is an echo even though the LAUNCH profile's default differs."""
+    cfg_effort("high")  # launch profile default
+    other = _other_profile(tmp_path, "low")
+    _, reasoning, _ = overrides({"profile": "other-profile", "reasoning_effort": "low"}, other)
+    assert reasoning is None
+
+
+def test_pick_matching_launch_global_in_another_profile_is_a_pin(tmp_path, overrides, cfg_effort):
+    """The comparison must read the TARGET profile's config: a deliberate pick that differs from the
+    target's default stays a pin even when it happens to equal the launch profile's default."""
+    cfg_effort("high")  # launch profile default — must NOT decide this
+    other = _other_profile(tmp_path, "low")
+    _, reasoning, _ = overrides({"profile": "other-profile", "reasoning_effort": "high"}, other)
+    assert reasoning == {"enabled": True, "effort": "high"}
