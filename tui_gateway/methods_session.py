@@ -320,11 +320,18 @@ def _create_overrides(params: dict) -> tuple:
         model_override = {"model": create_model, "provider": _str_param(params, "provider") or None}
     reasoning_override = None
     if effort := _str_param(params, "reasoning_effort"):
-        global_effort = str(((_load_cfg() or {}).get("agent") or {}).get("reasoning_effort", "") or "").strip().lower()
-        if effort.strip().lower() != global_effort:
-            with contextlib.suppress(Exception):
-                from hermes_constants import parse_reasoning_effort
-                reasoning_override = parse_reasoning_effort(effort)
+        # A value semantically equal to the CURRENT global default is an echo, not a
+        # choice: drop it so config resolution (incl. agent.reasoning_overrides) applies.
+        # Compare PARSED forms — config.yaml may spell "disabled" as false/"none"/"off".
+        # Known protocol limitation: without a client dirty flag, a user cannot re-pin
+        # the global default over a per-model override from the composer (the echo is
+        # indistinguishable from that choice and is dropped either way).
+        with contextlib.suppress(Exception):
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(effort)
+            global_raw = ((_load_cfg() or {}).get("agent") or {}).get("reasoning_effort")
+            if parsed is not None and parsed != parse_reasoning_effort(global_raw):
+                reasoning_override = parsed
     service_tier_override = None
     if "fast" in params:
         service_tier_override = "priority" if is_truthy_value(params.get("fast")) else ""

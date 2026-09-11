@@ -64,6 +64,26 @@ def test_no_global_configured_pin_still_applies(overrides, cfg_effort):
     assert reasoning == {"enabled": True, "effort": "medium"}
 
 
+def test_alias_disabled_config_vs_none_payload_is_echo(overrides, cfg_effort):
+    """config 'disabled' and composer 'none' are the same state — echo, not a pin."""
+    cfg_effort("disabled")
+    _, reasoning, _ = overrides({"reasoning_effort": "none"})
+    assert reasoning is None
+
+
+def test_alias_yaml_false_config_vs_none_payload_is_echo(overrides, cfg_effort):
+    """YAML `reasoning_effort: false` loads as Python False; 'none' means the same."""
+    cfg_effort(False)
+    _, reasoning, _ = overrides({"reasoning_effort": "none"})
+    assert reasoning is None
+
+
+def test_whitespace_variant_of_default_is_echo(overrides, cfg_effort):
+    cfg_effort(" medium ")  # parse_reasoning_effort strips
+    _, reasoning, _ = overrides({"reasoning_effort": "medium"})
+    assert reasoning is None
+
+
 def test_model_override_and_service_tier_untouched(overrides, cfg_effort):
     cfg_effort("high")
     model, reasoning, tier = overrides(
