@@ -38,6 +38,20 @@ def _write_tty(seq: str) -> None:
         pass
 
 
+_BODY_LIMIT = 200  # matches the Warp payload's existing detail[:200] cap so both surfaces
+                   # carry the same text
+
+
+def prompt_body(kind: str, detail: str = "") -> str:
+    """Notification body for a blocking prompt: "<kind> — <detail>", detail collapsed to a
+    single line (whitespace runs, including newlines, become one space) and capped at
+    _BODY_LIMIT codepoints. Falls back to just <kind> when detail is empty/whitespace."""
+    collapsed = " ".join(detail.split())
+    if not collapsed:
+        return kind
+    return f"{kind} — {collapsed[:_BODY_LIMIT]}"
+
+
 def osc9(body: str) -> str:
     """OSC 9 sequence with C0 controls and DEL stripped from the body."""
     return f"\x1b]9;{_C0_AND_DEL.sub('', body)}\x07"
