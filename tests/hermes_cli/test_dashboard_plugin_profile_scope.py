@@ -103,3 +103,37 @@ async def test_profile_only_plugin_asset_resolves_under_profile_scope(tmp_path, 
     with pytest.raises(HTTPException) as exc:
         await dashboard_ui.serve_plugin_asset("worker-only", "dist/index.js")
     assert exc.value.status_code == 404
+
+
+def test_web_profile_scope_marks_only_cross_profile_requests(tmp_path, monkeypatch):
+    """The dashboard's request scope is what suppresses the cross-profile plugin-module load
+    (``discover_plugins``, #106608). A plain override — the cron external worker's own home, or a
+    multiplexed gateway turn — is not a request scope and keeps loading that profile's plugins,
+    and neither is a request that names the process's OWN profile (current-profile semantics)."""
+    from hermes_cli import web_server_profiles as wsp
+    from hermes_constants import get_hermes_home, is_request_scoped_hermes_home
+
+    profiles_root = tmp_path / ".hermes" / "profiles"
+    worker = profiles_root / "worker"
+    worker.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    # Dashboard running for the default profile.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+
+    # Its own profile: no override at all, so nothing to mark.
+    with wsp._config_profile_scope(""):
+        assert is_request_scoped_hermes_home() is False
+
+    # Another profile: the request scope that must not load that profile's plugin modules.
+    with wsp._config_profile_scope("worker"):
+        assert is_request_scoped_hermes_home() is True
+
+    # Dashboard running FOR the named profile, request naming that same profile: the override is
+    # only a nesting guard, so this process's own plugins stay loadable.
+    monkeypatch.setenv("HERMES_HOME", str(worker))
+    with wsp._config_profile_scope("worker"):
+        assert is_request_scoped_hermes_home() is False
+        assert get_hermes_home().resolve() == worker.resolve()
+
+    assert is_request_scoped_hermes_home() is False
