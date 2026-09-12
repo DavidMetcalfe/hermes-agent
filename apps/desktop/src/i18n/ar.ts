@@ -579,6 +579,11 @@ export const ar = defineLocale({
       introSplashDesc: 'الشعار النصي والعبارة التمهيدية في محادثة فارغة.',
       reactionsTitle: 'تفاعلات الرسائل',
       reactionsDesc: 'تفاعلات إيموجي بأسلوب iMessage — تفاعل مع الرسائل، ويمكن لـ Hermes التفاعل مع رسائلك.',
+      autoSendTitle: 'إرسال بدون استخدام اليدين',
+      autoSendDesc:
+        'إرسال ما كتبته تلقائيًا بعد التوقف عن الكتابة أو الإملاء. يؤدي الضغط على أي مفتاح إلى الإلغاء.',
+      autoSendDelayTitle: 'تأخير بدون استخدام اليدين',
+      autoSendDelayDesc: 'مدة انتظار المحرر بعد آخر ضغطة مفتاح أو كلمة مُملاة قبل الإرسال.',
       tipsTitle: 'نصائح داخل التطبيق',
       tipsDesc:
         'فقاعة صغيرة تشير إلى جزء من التطبيق، تظهر أحيانًا أثناء الخمول ومن Hermes عند الحاجة. تظهر كل نصيحة مرة واحدة.',
@@ -2013,6 +2018,7 @@ export const ar = defineLocale({
     steer: 'توجيه',
     stop: 'إيقاف',
     send: 'إرسال',
+    autoSendCountdown: (seconds: number) => `الإرسال خلال ${seconds} ث`,
     speaking: 'يتحدث',
     transcribing: 'جار التفريغ',
     thinking: 'يفكر',
