@@ -79,6 +79,22 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
+# Terminals that raise an OS notification for OSC 9. Anything else — Apple Terminal, an unknown
+# TERM_PROGRAM, a multiplexer we cannot see through — gets the OS-notifier fallback instead.
+_OSC9_TERM_PROGRAMS = {"iterm.app", "ghostty", "wezterm", "warpterminal", "vscode", "cursor"}
+
+
+def osc9_capable(env=None) -> bool:
+    """True when the terminal described by `env` raises an OS notification for OSC 9."""
+    env = os.environ if env is None else env
+    term_prog = (env.get("TERM_PROGRAM") or "").lower()
+    if term_prog in _OSC9_TERM_PROGRAMS:
+        return True
+    if "kitty" in (env.get("TERM") or "").lower():
+        return True
+    return False
+
+
 def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:
     """Emit OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
     seq = osc9(f"Hermes: {context}")
@@ -86,3 +102,10 @@ def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = ""
         event = "permission_request" if prompt else "stop"
         seq += warp_osc777(event, detail or context, session_id)
     _write_tty(seq)
+    if not osc9_capable():
+        try:
+            from hermes_cli import os_notify
+
+            os_notify.notify("Hermes", context)
+        except Exception:
+            pass

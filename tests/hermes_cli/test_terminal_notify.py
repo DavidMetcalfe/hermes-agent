@@ -2,8 +2,10 @@
 
 import json
 
+import pytest
+
 from cli import HermesCLI
-from hermes_cli import terminal_notify
+from hermes_cli import os_notify, terminal_notify
 
 _WARP_OK = {
     "TERM_PROGRAM": "WarpTerminal",
@@ -120,5 +122,111 @@ def test_prompt_body_control_characters_sanitized_in_emitted_bytes(monkeypatch):
     terminal_notify.notify(body, prompt=True)
     out = "".join(written)
     assert out == "\x1b]9;Hermes: clarify — Which file to write?\x07"
+
+
+def test_notify_fallback_when_terminal_not_osc9_capable(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.delenv("TERM", raising=False)
+    for key in ("WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    written = []
+    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+    spy = []
+    monkeypatch.setattr(os_notify, "notify", lambda title, body: spy.append((title, body)) or True)
+
+    prompt_text = "clarify — Which output file should I write?"
+    terminal_notify.notify(prompt_text, prompt=True)
+
+    assert len(spy) == 1
+    assert spy[0] == ("Hermes", prompt_text)
+    out = "".join(written)
+    assert out == f"\x1b]9;Hermes: {prompt_text}\x07"
+
+
+def test_notify_no_double_notification_when_terminal_osc9_capable(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    monkeypatch.delenv("TERM", raising=False)
+    for key in ("WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    written = []
+    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+    spy = []
+    monkeypatch.setattr(os_notify, "notify", lambda title, body: spy.append((title, body)) or True)
+
+    prompt_text = "clarify — Which output file should I write?"
+    terminal_notify.notify(prompt_text, prompt=True)
+
+    assert len(spy) == 0
+    out = "".join(written)
+    assert out == f"\x1b]9;Hermes: {prompt_text}\x07"
+
+
+def test_notify_fallback_failure_isolation(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.delenv("TERM", raising=False)
+    for key in ("WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    written = []
+    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+
+    def _broken_notify(title, body):
+        raise OSError("notification daemon unreachable")
+
+    monkeypatch.setattr(os_notify, "notify", _broken_notify)
+
+    prompt_text = "clarify — Which output file should I write?"
+    terminal_notify.notify(prompt_text, prompt=True)
+
+    out = "".join(written)
+    assert out == f"\x1b]9;Hermes: {prompt_text}\x07"
+
+
+@pytest.mark.parametrize(
+    "term_prog",
+    [
+        "iterm.app",
+        "iTerm.app",
+        "ITERM.APP",
+        "ghostty",
+        "Ghostty",
+        "GHOSTTY",
+        "wezterm",
+        "WezTerm",
+        "WEZTERM",
+        "warpterminal",
+        "WarpTerminal",
+        "WARPTERMINAL",
+        "vscode",
+        "VSCode",
+        "VSCODE",
+        "cursor",
+        "Cursor",
+        "CURSOR",
+    ],
+)
+def test_osc9_capable_set_members_case_insensitive(term_prog):
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": term_prog}) is True
+
+
+def test_osc9_capable_kitty():
+    assert terminal_notify.osc9_capable({"TERM": "xterm-kitty"}) is True
+    assert terminal_notify.osc9_capable({"TERM": "kitty"}) is True
+    assert terminal_notify.osc9_capable({"TERM": "xterm-kitty", "TERM_PROGRAM": ""}) is True
+
+
+def test_osc9_capable_incapable_and_empty():
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "Apple_Terminal"}) is False
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "alacritty"}) is False
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "unknown_term"}) is False
+    assert terminal_notify.osc9_capable({}) is False
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "", "TERM": ""}) is False
+
+
+def test_osc9_capable_defaults_to_environ(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    assert terminal_notify.osc9_capable() is True
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.delenv("TERM", raising=False)
+    assert terminal_notify.osc9_capable() is False
 
 
