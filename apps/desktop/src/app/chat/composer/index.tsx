@@ -429,6 +429,10 @@ export function ChatBar({
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
+  // An attachment mid-upload would be dropped or half-carried by a send. Also
+  // drives the disarm effect below, so the countdown cannot tick while it holds.
+  const hasUploadingAttachment = attachments.some(attachment => attachment?.uploadState === 'uploading')
+
   // Hands-free send: an opt-in auto-submit after the user stops producing input
   // (typing or OS-level dictation). Off by default — see store/auto-send.
   const autoSendEnabled = useStore($autoSendIdleEnabled)
@@ -459,7 +463,7 @@ export function ChatBar({
       !minimal &&
       !voiceLiveRef.current &&
       // An attachment mid-upload would be dropped or half-carried by a send.
-      !attachments.some(attachment => attachment?.uploadState === 'uploading') &&
+      !hasUploadingAttachment &&
       // Leaving the window keeps DOM focus on the editor (Chromium does not blur
       // the element), so the focus check alone cannot see it — and the countdown
       // the user needs to see is off screen.
@@ -481,6 +485,7 @@ export function ChatBar({
       busy ||
       compacting ||
       disabled ||
+      hasUploadingAttachment ||
       inputDisabled ||
       minimal ||
       queueEdit ||
@@ -495,6 +500,7 @@ export function ChatBar({
     cancelAutoSend,
     compacting,
     disabled,
+    hasUploadingAttachment,
     inputDisabled,
     minimal,
     queueEdit,
@@ -1101,6 +1107,16 @@ export function ChatBar({
   // dispatchSubmitRef — no effect needed for a plain mirror.
   voiceStopRef.current = { active: voiceConversationActive, end: endConversation }
   voiceLiveRef.current = voiceConversationActive
+
+  // A live voice conversation owns the turn — the loop submits its own turns —
+  // so a pending auto-send gives way the moment one starts. Declared here rather
+  // than with the other disarm conditions because the conversation state only
+  // exists below the composer body's own hooks.
+  useEffect(() => {
+    if (voiceConversationActive) {
+      cancelAutoSend()
+    }
+  }, [cancelAutoSend, voiceConversationActive])
 
   const contextMenu = (
     <ContextMenu

@@ -507,4 +507,54 @@ describe('useAutoSendIdle', () => {
     expect(onFire).toHaveBeenCalledTimes(1)
     expect(hook.result.current.armedInSeconds).toBeNull()
   })
+
+  it('slash semantics: a slash command embedded in prose still sends (it is a message)', async () => {
+    // The guard is anchored: a message that merely CONTAINS a command is a
+    // message, exactly as the submit engine treats it when Enter is pressed.
+    const { hook, onFire } = renderAutoSendHook({
+      readText: () => 'please /help me with the parser'
+    })
+
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertText')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+  })
+
+  it('untrusted edits with an empty or omitted inputType cancel and never arm', async () => {
+    const { hook, onFire } = renderAutoSendHook()
+
+    // Arm with a trusted insert first, so the cancel path is what is exercised.
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertText')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    act(() => {
+      hook.result.current.noteEdit(false, '')
+    })
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    // An omitted inputType is the same case: trust is what decides.
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertText')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    act(() => {
+      hook.result.current.noteEdit(false)
+    })
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(onFire).not.toHaveBeenCalled()
+  })
 })

@@ -120,6 +120,7 @@ function Harness({
 
   useEffect(() => {
     if (
+      attachmentUploading ||
       awaitingInput ||
       blockingPrompt ||
       busy ||
@@ -128,11 +129,13 @@ function Harness({
       inputDisabled ||
       minimal ||
       queueEdit ||
-      trigger
+      trigger ||
+      voiceLive
     ) {
       cancelAutoSend()
     }
   }, [
+    attachmentUploading,
     awaitingInput,
     blockingPrompt,
     busy,
@@ -142,7 +145,8 @@ function Harness({
     inputDisabled,
     minimal,
     queueEdit,
-    trigger
+    trigger,
+    voiceLive
   ])
 
   useEffect(() => {
@@ -688,6 +692,47 @@ describe('composer hands-free auto-send DOM behaviour', () => {
     })
 
     expect(onSubmit).toHaveBeenCalledTimes(1)
+  })
+
+  it('a voice conversation starting mid-countdown disarms it', async () => {
+    const onSubmit = vi.fn()
+    const view = render(<Harness onSubmit={onSubmit} />)
+    const editor = view.getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+      dispatchTrustedInput(editor, 'hello world')
+    })
+    expect(view.getByTestId('countdown').textContent).toBe('2')
+
+    // The voice loop submits its own turns — a pending send must give way.
+    view.rerender(<Harness onSubmit={onSubmit} voiceLive />)
+    expect(view.getByTestId('countdown').textContent).toBe('idle')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('an upload starting mid-countdown disarms it', async () => {
+    const onSubmit = vi.fn()
+    const view = render(<Harness onSubmit={onSubmit} />)
+    const editor = view.getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+      dispatchTrustedInput(editor, 'hello world')
+    })
+    expect(view.getByTestId('countdown').textContent).toBe('2')
+
+    view.rerender(<Harness attachmentUploading onSubmit={onSubmit} />)
+    expect(view.getByTestId('countdown').textContent).toBe('idle')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
   })
 
   describe('ComposerControls countdown affordance', () => {
