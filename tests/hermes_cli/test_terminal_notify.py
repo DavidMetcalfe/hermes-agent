@@ -1,6 +1,8 @@
 """display.bell_on_prompt / bell_on_complete also drive OSC 9 + Warp OSC 777 via _ring_bell."""
 
 import json
+import shutil
+import subprocess
 
 import pytest
 
@@ -196,30 +198,75 @@ def test_notify_fallback_failure_isolation(monkeypatch):
         "warpterminal",
         "WarpTerminal",
         "WARPTERMINAL",
-        "vscode",
-        "VSCode",
-        "VSCODE",
-        "cursor",
-        "Cursor",
-        "CURSOR",
     ],
 )
 def test_osc9_capable_set_members_case_insensitive(term_prog):
     assert terminal_notify.osc9_capable({"TERM_PROGRAM": term_prog}) is True
 
 
-def test_osc9_capable_kitty():
+def test_osc9_capable_terms_kitty_and_foot():
     assert terminal_notify.osc9_capable({"TERM": "xterm-kitty"}) is True
     assert terminal_notify.osc9_capable({"TERM": "kitty"}) is True
     assert terminal_notify.osc9_capable({"TERM": "xterm-kitty", "TERM_PROGRAM": ""}) is True
+    assert terminal_notify.osc9_capable({"TERM": "foot"}) is True
+    assert terminal_notify.osc9_capable({"TERM": "foot-extra"}) is True
+    assert terminal_notify.osc9_capable({"TERM": "foot", "TERM_PROGRAM": ""}) is True
 
 
-def test_osc9_capable_incapable_and_empty():
-    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "Apple_Terminal"}) is False
-    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "alacritty"}) is False
-    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "unknown_term"}) is False
-    assert terminal_notify.osc9_capable({}) is False
-    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "", "TERM": ""}) is False
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"TERM_PROGRAM": "Apple_Terminal"},
+        {"TERM_PROGRAM": "vscode"},
+        {"TERM_PROGRAM": "VSCode"},
+        {"TERM_PROGRAM": "VSCODE"},
+        {"TERM_PROGRAM": "cursor"},
+        {"TERM_PROGRAM": "Cursor"},
+        {"TERM_PROGRAM": "CURSOR"},
+        {"TERM_PROGRAM": "alacritty"},
+        {"TERM_PROGRAM": "unknown_term"},
+        {},
+        {"TERM_PROGRAM": ""},
+        {"TERM_PROGRAM": "", "TERM": ""},
+    ],
+)
+def test_osc9_capable_incapable_and_empty(env):
+    assert terminal_notify.osc9_capable(env) is False
+
+
+def test_osc9_capable_tmux_and_screen():
+    # Multiplexers discard unknown OSC sequences; must be treated as incapable
+    # even when nested inside an otherwise capable terminal.
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "iTerm.app", "TMUX": "/tmp/tmux-1000/default,1234,0"}) is False
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "ghostty", "TMUX": "1"}) is False
+    assert terminal_notify.osc9_capable({"TERM_PROGRAM": "iTerm.app", "STY": "1234.pts-0.host"}) is False
+    assert terminal_notify.osc9_capable({"TERM": "xterm-kitty", "TMUX": "1"}) is False
+    assert terminal_notify.osc9_capable({"TERM": "foot", "STY": "1"}) is False
+
+
+def test_notify_fallback_fires_under_tmux_and_screen(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
+    monkeypatch.delenv("TERM", raising=False)
+    for key in ("WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+    written = []
+    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+    spy = []
+    monkeypatch.setattr(os_notify, "notify", lambda title, body: spy.append((title, body)) or True)
+
+    # TMUX set -> fallback fires
+    monkeypatch.setenv("TMUX", "/tmp/tmux-1000/default,1234,0")
+    terminal_notify.notify("test context", prompt=True)
+    assert len(spy) == 1
+    assert spy[0] == ("Hermes", "test context")
+
+    # STY set -> fallback fires
+    spy.clear()
+    monkeypatch.delenv("TMUX")
+    monkeypatch.setenv("STY", "1234.pts-0.host")
+    terminal_notify.notify("test context 2", prompt=True)
+    assert len(spy) == 1
+    assert spy[0] == ("Hermes", "test context 2")
 
 
 def test_osc9_capable_defaults_to_environ(monkeypatch):
@@ -228,5 +275,50 @@ def test_osc9_capable_defaults_to_environ(monkeypatch):
     monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
     monkeypatch.delenv("TERM", raising=False)
     assert terminal_notify.osc9_capable() is False
+
+
+def test_notify_ssh_skip_integration(monkeypatch):
+    monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
+    monkeypatch.delenv("TERM", raising=False)
+    for key in ("WARP_CLI_AGENT_PROTOCOL_VERSION", "WARP_CLIENT_VERSION"):
+        monkeypatch.delenv(key, raising=False)
+
+    # Ensure os_notify probes find a binary on any platform
+    orig_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd: orig_which(cmd) or f"/usr/bin/{cmd}",
+    )
+
+    popen_calls = []
+
+    class DummyProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *args, **kwargs: popen_calls.append((args, kwargs)) or DummyProc(),
+    )
+
+    written = []
+    monkeypatch.setattr(terminal_notify, "_write_tty", written.append)
+
+    # 1. With SSH_CONNECTION set: OSC 9 is emitted to tty, but no OS notifier child is spawned
+    monkeypatch.setenv("SSH_CONNECTION", "10.0.0.1 50000 10.0.0.2 22")
+    terminal_notify.notify("clarify — question?", prompt=True)
+
+    assert written == ["\x1b]9;Hermes: clarify — question?\x07"]
+    assert len(popen_calls) == 0
+
+    # 2. Inverse without SSH_CONNECTION: OS notifier child is spawned
+    written.clear()
+    monkeypatch.delenv("SSH_CONNECTION")
+    terminal_notify.notify("clarify — question?", prompt=True)
+
+    assert written == ["\x1b]9;Hermes: clarify — question?\x07"]
+    assert len(popen_calls) == 1
 
 

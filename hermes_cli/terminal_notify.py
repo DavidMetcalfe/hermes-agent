@@ -1,6 +1,6 @@
 """Terminal-native desktop notifications: OSC 9 and Warp's OSC 777 CLI-agent protocol.
 
-OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
+OSC 9 (``ESC ] 9 ; <body> BEL``): Foot, Ghostty, iTerm2, Kitty and WezTerm raise an OS notification;
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
 structured CLI-agent protocol (tab status + notification mailbox).
 
@@ -79,20 +79,25 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
-# Terminals that raise an OS notification for OSC 9. Anything else — Apple Terminal, an unknown
-# TERM_PROGRAM, a multiplexer we cannot see through — gets the OS-notifier fallback instead.
-_OSC9_TERM_PROGRAMS = {"iterm.app", "ghostty", "wezterm", "warpterminal", "vscode", "cursor"}
+# Terminals that raise an OS notification for OSC 9. Verified against terminal-support
+# references: iTerm2, Ghostty, WezTerm, Warp (and kitty/foot, which leave TERM_PROGRAM unset and
+# are matched on TERM). xterm.js-based terminals (VS Code, Cursor) are deliberately absent —
+# xterm.js does not implement OSC 9 notifications.
+_OSC9_TERM_PROGRAMS = {"iterm.app", "ghostty", "wezterm", "warpterminal"}
+_OSC9_TERMS = ("kitty", "foot")
 
 
 def osc9_capable(env=None) -> bool:
     """True when the terminal described by `env` raises an OS notification for OSC 9."""
     env = os.environ if env is None else env
-    term_prog = (env.get("TERM_PROGRAM") or "").lower()
-    if term_prog in _OSC9_TERM_PROGRAMS:
+    if env.get("TMUX") or env.get("STY"):
+        # tmux/screen drop unknown OSC unless passthrough is configured, so the sequence never
+        # reaches the terminal — treat the session as incapable and let the OS notifier cover it.
+        return False
+    if (env.get("TERM_PROGRAM") or "").lower() in _OSC9_TERM_PROGRAMS:
         return True
-    if "kitty" in (env.get("TERM") or "").lower():
-        return True
-    return False
+    term = (env.get("TERM") or "").lower()
+    return any(name in term for name in _OSC9_TERMS)
 
 
 def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:

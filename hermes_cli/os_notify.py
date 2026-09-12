@@ -7,16 +7,25 @@ it integrates better with terminal emulators. On macOS the notifications are att
 to Script Editor rather than Hermes (Apple removed the sender override), which is why
 this module exists solely as a secondary path.
 
+Windows delivery is not implemented — deferred until someone with a Windows host can
+validate the mechanism end-to-end (documented follow-up). Previous iterations attempted
+PowerShell-driven WinRT toasts, but were removed because:
+1. PowerShell folds trailing arguments after ``-Command <script>`` into the parsed
+   command string, creating a command-substitution injection surface with model-generated text.
+2. The WinRT toast construction bypassed creating a ``Windows.UI.Notifications.ToastNotification``
+   object (passing ``XmlDocument`` directly to ``Show()``), which cannot be validated without
+   a Windows host.
+
 The public API follows a frozen interface used elsewhere in the CLI:
 
 * ``notifier_argv(kind: str, title: str, body: str) -> list[str] | None`` — returns the
   subprocess argv for the requested OS, or ``None`` for unsupported kinds. ``kind`` must
-  be one of ``"darwin"``, ``"linux"`` or ``"win32"``; the function never reads
+  be one of ``"darwin"`` or ``"linux"`` (``"win32"`` returns ``None``); the function never reads
   ``sys.platform`` internally.
 
 * ``usable_kind(*, env=None, platform=None, which=None) -> str | None`` — determines
   which notifier to use on the current host. Returns ``None`` when no notifier should
-  be used (e.g. under SSH, missing binaries, or unknown platforms). ``which`` is a
+  be used (e.g. under SSH, missing binaries, or unsupported platforms like win32). ``which`` is a
   callable compatible with ``shutil.which`` and is injectable for tests.
 
 * ``notify(title: str, body: str) -> bool`` — spawns the notification process in a
@@ -52,8 +61,9 @@ def notifier_argv(kind: str, title: str, body: str) -> Optional[List[str]]:
     Parameters
     ----------
     kind: str
-        One of ``"darwin"``, ``"linux"`` or ``"win32"``. The function never reads
+        One of ``"darwin"`` or ``"linux"``. The function never reads
         ``sys.platform`` — the caller must provide the correct kind.
+        ``"win32"`` is not implemented and returns ``None``.
     title: str
         Notification title.
     body: str
@@ -84,24 +94,6 @@ def notifier_argv(kind: str, title: str, body: str) -> Optional[List[str]]:
     if kind == "linux":
         # ``notify-send`` respects the freedesktop.org desktop notification spec.
         return ["notify-send", "--app-name=Hermes", title, body]
-    if kind == "win32":
-        # Windows toast via WinRT (ToastNotificationManager) invoked through PowerShell.
-        # This path is best-effort and is NOT verified on a real Windows host by us.
-        # Per Microsoft Learn, desktop apps require a registered Application User Model ID
-        # (AUMID) on a Start-menu shortcut to display toast notifications from a desktop
-        # process. We use the well-known Windows PowerShell AUMID, so any toast the user
-        # sees is attributed to Windows PowerShell rather than Hermes.
-        # Title and body arrive as $args[0] and $args[1] (never interpolated into the script)
-        # and are assigned via XPath InnerText, which automatically handles XML escaping.
-        script = (
-            "$null = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]\n"
-            "$xml = [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType, Windows.UI.Notifications, ContentType = WindowsRuntime]::ToastText02)\n"
-            "$xml.SelectSingleNode('//text[@id=\"1\"]').InnerText = $args[0]\n"
-            "$xml.SelectSingleNode('//text[@id=\"2\"]').InnerText = $args[1]\n"
-            "$AppId = '{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe'\n"
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]::CreateToastNotifier($AppId).Show($xml)"
-        )
-        return ["powershell", "-NoProfile", "-NonInteractive", "-Command", script, title, body]
     return None
 
 
@@ -149,13 +141,22 @@ def usable_kind(
         if not which("notify-send"):
             return None
         return "linux"
-    if platform == "win32":
-        # ``powershell`` is the only viable route on Windows.  ``notify-send`` is not
-        # available and the WinRT APIs are accessed through PowerShell.
-        if not which("powershell"):
-            return None
-        return "win32"
     return None
+
+
+_ACTIVE: list = []   # spawned notifier children, reaped on the next spawn
+
+
+def _reap() -> None:
+    """Drop notifier children that have already exited (Popen.poll() reaps them)."""
+    still_active = []
+    for proc in _ACTIVE:
+        try:
+            if proc.poll() is None:
+                still_active.append(proc)
+        except Exception:
+            pass
+    _ACTIVE[:] = still_active
 
 
 def notify(title: str, body: str) -> bool:
@@ -164,6 +165,7 @@ def notify(title: str, body: str) -> bool:
     All failures are caught so the clarify prompt is never delayed.  The function
     returns ``True`` when a notifier was successfully launched, ``False`` otherwise.
     """
+    _reap()
     try:
         kind = usable_kind()
         if kind is None:
@@ -175,13 +177,15 @@ def notify(title: str, body: str) -> bool:
         # and the appropriate Win32 flags on Windows.
         kwargs = windows_detach_popen_kwargs()
         # ``DEVNULL`` suppresses all output from the notification process.
-        subprocess.Popen(
+        proc = subprocess.Popen(
             argv,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **kwargs,
         )
+        if proc is not None:
+            _ACTIVE.append(proc)
         return True
     except Exception:
         return False

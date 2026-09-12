@@ -78,38 +78,8 @@ def test_notifier_argv_linux():
 
 
 def test_notifier_argv_win32():
-    sentinel_title = "SENTINEL-TITLE-7f3a"
-    sentinel_body = "SENTINEL-BODY-9c1b"
-    argv = notifier_argv("win32", sentinel_title, sentinel_body)
-    assert argv is not None
-    assert argv[:4] == ["powershell", "-NoProfile", "-NonInteractive", "-Command"]
-
-    script = argv[4]
-
-    # Invariant: caller text is never part of the script source;
-    # it travels as separate trailing argv items.
-    assert sentinel_title not in script
-    assert sentinel_body not in script
-    assert argv[-2] == sentinel_title
-    assert argv[-1] == sentinel_body
-
-    # Verify that the script uses the WinRT toast API and the well-known PowerShell AUMID
-    assert "Windows.UI.Notifications.ToastNotificationManager" in script
-    assert "ToastText02" in script
-    assert "$args[0]" in script
-    assert "$args[1]" in script
-    assert "InnerText" in script
-    assert "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe" in script
-
-    # Verify that XML-significant characters are not in the script
-    # and survive unescaped in trailing argv items.
-    test_body = '<tag>value</tag> & "'
-    argv2 = notifier_argv("win32", "t", test_body)
-    script2 = argv2[4]
-    assert "<tag>" not in script2
-    assert test_body not in script2
-    assert argv2[-2] == "t"
-    assert argv2[-1] == test_body
+    # Windows delivery is not implemented; notifier_argv returns None.
+    assert notifier_argv("win32", "title", "body") is None
 
 
 def test_notifier_argv_unknown():
@@ -144,14 +114,18 @@ def test_usable_kind_linux(monkeypatch):
 
 
 def test_usable_kind_win32(monkeypatch):
+    # Windows notifier is not implemented; usable_kind returns None even when powershell exists.
     dummy_path = "C:\\Windows\\System32\\powershell.exe"
-    monkeypatch.setattr(shutil, "which", lambda cmd: dummy_path if cmd == "powershell" else None)
-    kind = usable_kind(platform="win32")
-    assert kind == "win32"
+    which_calls = []
 
-    # Missing PowerShell should return None.
-    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+    def fake_which(cmd):
+        which_calls.append(cmd)
+        return dummy_path if cmd == "powershell" else None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
     assert usable_kind(platform="win32") is None
+    # No powershell probe should be executed for win32
+    assert "powershell" not in which_calls
 
 
 def test_usable_kind_unknown_platform():
@@ -190,7 +164,7 @@ def test_notify_success(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", mock_popen)
 
     # Test each supported platform.
-    for kind in ["darwin", "linux", "win32"]:
+    for kind in ["darwin", "linux"]:
         # Force usable_kind to return the expected kind.
         monkeypatch.setattr(
             hermes_cli.os_notify,
@@ -344,13 +318,86 @@ def test_real_notifier_usable():
     ]
     assert argv == expected
 
-# ---------------------------------------------------------------------------
-# Import-time sanity: ensure the public symbols are exported.
-# ---------------------------------------------------------------------------
+def test_notify_win32_does_not_spawn(monkeypatch):
+    calls = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: calls.append((a, kw)))
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert notify("title", "body") is False
+    assert not calls
 
-def test_public_symbols():
-    # ``from hermes_cli.os_notify import *`` should expose the three functions.
-    import hermes_cli.os_notify as mod
-    assert hasattr(mod, "notifier_argv")
-    assert hasattr(mod, "usable_kind")
-    assert hasattr(mod, "notify")
+    # Even if usable_kind somehow returned "win32", notifier_argv is None so no spawn occurs
+    monkeypatch.setattr(hermes_cli.os_notify, "usable_kind", lambda *a, **kw: "win32")
+    assert notify("title", "body") is False
+    assert not calls
+
+
+def test_notify_real_argv_darwin_and_linux(monkeypatch):
+    calls = []
+
+    class DummyProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(
+        subprocess,
+        "Popen",
+        lambda *a, **kw: calls.append((a, kw)) or DummyProc(),
+    )
+
+    title = "Test Title"
+    body = "Test Body"
+
+    # Darwin: real notifier_argv is wired through to Popen
+    monkeypatch.setattr(hermes_cli.os_notify, "usable_kind", lambda *a, **kw: "darwin")
+    assert notify(title, body) is True
+    args, kwargs = calls[-1]
+    expected_darwin = [
+        "osascript",
+        "-e",
+        "on run {t, b}",
+        "-e",
+        "display notification b with title t",
+        "-e",
+        "end run",
+        "--",
+        title,
+        body,
+    ]
+    assert args[0] == expected_darwin
+    assert "start_new_session" in kwargs or "stdin" in kwargs
+
+    # Linux: real notifier_argv is wired through to Popen
+    monkeypatch.setattr(hermes_cli.os_notify, "usable_kind", lambda *a, **kw: "linux")
+    assert notify(title, body) is True
+    args, kwargs = calls[-1]
+    expected_linux = ["notify-send", "--app-name=Hermes", title, body]
+    assert args[0] == expected_linux
+    assert "start_new_session" in kwargs or "stdin" in kwargs
+
+
+def test_reap():
+    class FakeProc:
+        def __init__(self, exit_code):
+            self.exit_code = exit_code
+            self.polled = False
+
+        def poll(self):
+            self.polled = True
+            return self.exit_code
+
+    live1 = FakeProc(None)
+    exited1 = FakeProc(0)
+    live2 = FakeProc(None)
+    exited2 = FakeProc(1)
+
+    saved_active = hermes_cli.os_notify._ACTIVE[:]
+    try:
+        hermes_cli.os_notify._ACTIVE = [live1, exited1, live2, exited2]
+        hermes_cli.os_notify._reap()
+        assert live1.polled is True
+        assert exited1.polled is True
+        assert live2.polled is True
+        assert exited2.polled is True
+        assert hermes_cli.os_notify._ACTIVE == [live1, live2]
+    finally:
+        hermes_cli.os_notify._ACTIVE = saved_active
