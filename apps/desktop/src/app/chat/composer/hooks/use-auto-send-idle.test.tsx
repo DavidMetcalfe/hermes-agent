@@ -398,4 +398,113 @@ describe('useAutoSendIdle', () => {
     })
     expect(onFire).not.toHaveBeenCalled()
   })
+
+  it('noteEdit(true, "insertLineBreak") and noteEdit(true, "insertParagraph") each arm and fire after the delay', async () => {
+    const { hook, onFire } = renderAutoSendHook()
+
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertLineBreak')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertParagraph')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+  })
+
+  it('trusted edit with empty or omitted inputType arms and fires', async () => {
+    const { hook, onFire } = renderAutoSendHook()
+
+    // Empty inputType (Windows Voice Typing)
+    act(() => {
+      hook.result.current.noteEdit(true, '')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    // Omitted inputType
+    act(() => {
+      hook.result.current.noteEdit(true)
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(2)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+  })
+
+  it('noteCommittedComposition() followed immediately by trailing insertFromComposition still fires exactly once after the delay', async () => {
+    const { hook, onFire } = renderAutoSendHook({ delayMs: 2000 })
+
+    act(() => {
+      hook.result.current.noteCommittedComposition()
+      hook.result.current.noteEdit(true, 'insertFromComposition')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    // Ensure it fires only once.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+  })
+
+  it('slash semantics: fires for path-like prose (/Users/me/notes.md is stale) but not for slash commands (/help)', async () => {
+    let text = '/Users/me/notes.md is stale'
+
+    const { hook, onFire } = renderAutoSendHook({
+      readText: () => text
+    })
+
+    // Path-like prose is not a slash command — should fire
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertText')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+
+    // Slash command — should not fire
+    text = '/help'
+    act(() => {
+      hook.result.current.noteEdit(true, 'insertText')
+    })
+    expect(hook.result.current.armedInSeconds).toBe(2)
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+    expect(onFire).toHaveBeenCalledTimes(1)
+    expect(hook.result.current.armedInSeconds).toBeNull()
+  })
 })

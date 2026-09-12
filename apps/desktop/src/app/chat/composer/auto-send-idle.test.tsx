@@ -9,6 +9,7 @@ import { useAutoSendIdle } from './hooks/use-auto-send-idle'
 import type { ChatBarState } from './types'
 
 interface HarnessProps {
+  attachmentUploading?: boolean
   awaitingInput?: boolean
   blockingPrompt?: boolean
   busy?: boolean
@@ -17,13 +18,16 @@ interface HarnessProps {
   disabled?: boolean
   enabled?: boolean
   inputDisabled?: boolean
+  minimal?: boolean
   onSubmit: (text: string) => void
   queueEdit?: boolean
   resetKey?: string
   trigger?: null | { kind: string }
+  voiceLive?: boolean
 }
 
 function Harness({
+  attachmentUploading = false,
   awaitingInput = false,
   blockingPrompt = false,
   busy = false,
@@ -32,10 +36,12 @@ function Harness({
   disabled = false,
   enabled = true,
   inputDisabled = false,
+  minimal = false,
   onSubmit,
   queueEdit = false,
   resetKey = 'session-1',
-  trigger = null
+  trigger = null,
+  voiceLive = false
 }: HarnessProps) {
   const editorRef = useRef<HTMLDivElement>(null)
   const draftRef = useRef('')
@@ -78,6 +84,7 @@ function Harness({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
+      cancelAutoSend()
       submitDraft()
     }
   }
@@ -93,10 +100,15 @@ function Harness({
       !disabled &&
       !inputDisabled &&
       !compacting &&
+      !composingRef.current &&
       !queueEdit &&
       !awaitingInput &&
       !blockingPrompt &&
       trigger === null &&
+      !minimal &&
+      !voiceLive &&
+      !attachmentUploading &&
+      (editorRef.current ? editorRef.current.ownerDocument.hasFocus() : true) &&
       !!editorRef.current &&
       editorRef.current.contains(editorRef.current.ownerDocument.activeElement),
     delayMs,
@@ -107,10 +119,41 @@ function Harness({
   })
 
   useEffect(() => {
-    if (busy || disabled || inputDisabled || queueEdit || trigger) {
+    if (
+      awaitingInput ||
+      blockingPrompt ||
+      busy ||
+      compacting ||
+      disabled ||
+      inputDisabled ||
+      minimal ||
+      queueEdit ||
+      trigger
+    ) {
       cancelAutoSend()
     }
-  }, [busy, cancelAutoSend, disabled, inputDisabled, queueEdit, trigger])
+  }, [
+    awaitingInput,
+    blockingPrompt,
+    busy,
+    cancelAutoSend,
+    compacting,
+    disabled,
+    inputDisabled,
+    minimal,
+    queueEdit,
+    trigger
+  ])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    window.addEventListener('blur', cancelAutoSend)
+
+    return () => window.removeEventListener('blur', cancelAutoSend)
+  }, [cancelAutoSend])
 
   const flushEditorToDraft = (editor: HTMLDivElement) => {
     const nextDraft = composerPlainText(editor)
@@ -433,6 +476,218 @@ describe('composer hands-free auto-send DOM behaviour', () => {
     })
 
     expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('multi-composer: only the focused composer auto-sends', async () => {
+    const firstSubmit = vi.fn()
+    const secondSubmit = vi.fn()
+
+    const view = render(
+      <>
+        <Harness onSubmit={firstSubmit} resetKey="session-1" />
+        <Harness onSubmit={secondSubmit} resetKey="session-2" />
+      </>
+    )
+
+    const editors = view.getAllByTestId('editor')
+
+    // Both composers receive a trusted insert (a dictation stream can land in
+    // either); only the one the user is actually in may send.
+    act(() => {
+      editors[1].focus()
+      dispatchTrustedInput(editors[0], 'from the unfocused composer')
+      dispatchTrustedInput(editors[1], 'from the focused composer')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(firstSubmit).not.toHaveBeenCalled()
+    expect(secondSubmit).toHaveBeenCalledTimes(1)
+    expect(secondSubmit).toHaveBeenCalledWith('from the focused composer')
+  })
+
+  it('mid-composition: a trusted insert cannot auto-send until the composition commits', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+      fireEvent.compositionStart(editor)
+    })
+
+    // Some IMEs emit a TRUSTED insert for preedit text rather than a
+    // composition-typed one. That arms the timer, so the fire-time composing
+    // gate is the only thing standing between a mid-thought pause and a
+    // half-composed message being sent.
+    act(() => {
+      dispatchTrustedInput(editor, '你好', 'insertText')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5000)
+    })
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    // The commit is the point where the text becomes sendable.
+    act(() => {
+      fireEvent.compositionEnd(editor)
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('你好')
+  })
+
+  it('window blur cancels a pending auto-send', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+    })
+
+    act(() => {
+      dispatchTrustedInput(editor, 'hello world')
+    })
+
+    act(() => {
+      fireEvent(window, new Event('blur'))
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('loss of window focus blocks the fire', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+    // jsdom's hasFocus defaults to false until something in the document is
+    // focused, so stub the gate's own read rather than depending on that.
+    const hasFocusSpy = vi.spyOn(editor.ownerDocument, 'hasFocus').mockReturnValue(false)
+
+    try {
+      act(() => {
+        editor.focus()
+      })
+
+      act(() => {
+        dispatchTrustedInput(editor, 'hello world')
+      })
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2000)
+      })
+
+      expect(onSubmit).not.toHaveBeenCalled()
+    } finally {
+      hasFocusSpy.mockRestore()
+    }
+  })
+
+  it('minimal layout never auto-sends', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness minimal onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+    })
+
+    act(() => {
+      dispatchTrustedInput(editor, 'hello world')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('a live voice conversation never auto-sends', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness onSubmit={onSubmit} voiceLive />)
+    const editor = getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+    })
+
+    act(() => {
+      dispatchTrustedInput(editor, 'hello world')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('an attachment mid-upload never auto-sends', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness attachmentUploading onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+
+    act(() => {
+      editor.focus()
+    })
+
+    act(() => {
+      dispatchTrustedInput(editor, 'hello world')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+  })
+
+  it('manual Enter cancels the pending countdown', async () => {
+    const onSubmit = vi.fn()
+    const { getByTestId } = render(<Harness onSubmit={onSubmit} />)
+    const editor = getByTestId('editor')
+    const countdown = getByTestId('countdown')
+
+    act(() => {
+      editor.focus()
+    })
+
+    act(() => {
+      dispatchTrustedInput(editor, 'hello world')
+    })
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000)
+    })
+
+    expect(onSubmit).not.toHaveBeenCalled()
+
+    act(() => {
+      fireEvent.keyDown(editor, { key: 'Enter' })
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
+    expect(onSubmit).toHaveBeenCalledWith('hello world')
+    expect(countdown.textContent).toBe('idle')
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000)
+    })
+
+    expect(onSubmit).toHaveBeenCalledTimes(1)
   })
 
   describe('ComposerControls countdown affordance', () => {

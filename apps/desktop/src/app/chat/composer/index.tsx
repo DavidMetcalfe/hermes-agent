@@ -224,6 +224,10 @@ export function ChatBar({
   // engine writes it — an explicit shared handle, not a back-reference.
   const queueEditRef = useRef<QueueEditState | null>(null)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  // Live voice-conversation handle for the auto-send gate: the voice loop submits
+  // its own turns, so a text turn auto-firing mid-conversation would collide with
+  // it. Assigned next to voiceStopRef (below) and read at fire time.
+  const voiceLiveRef = useRef(false)
 
   const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
@@ -441,11 +445,25 @@ export function ChatBar({
       !disabled &&
       !inputDisabled &&
       !compacting &&
+      // A composition can outlive a missed `compositionstart` (the editor
+      // self-heals the same flag on keydown for exactly that reason), so never
+      // fire while a preedit is live.
+      !composingRef.current &&
       !queueEdit &&
       !awaitingInput &&
       !blockingPrompt &&
       // An open completion popover means the text is mid-selection (`/` or `@`).
       trigger === null &&
+      // The narrowest layout hides the countdown, and an armed auto-send with no
+      // visible affordance is precisely the surprise this feature must not create.
+      !minimal &&
+      !voiceLiveRef.current &&
+      // An attachment mid-upload would be dropped or half-carried by a send.
+      !attachments.some(attachment => attachment?.uploadState === 'uploading') &&
+      // Leaving the window keeps DOM focus on the editor (Chromium does not blur
+      // the element), so the focus check alone cannot see it — and the countdown
+      // the user needs to see is off screen.
+      (typeof document === 'undefined' || document.hasFocus()) &&
       !!editorRef.current &&
       editorRef.current.contains(document.activeElement),
     delayMs: autoSendDelayMs,
@@ -457,10 +475,43 @@ export function ChatBar({
 
   // Anything that makes a send wrong right now also disarms the pending one.
   useEffect(() => {
-    if (busy || disabled || inputDisabled || queueEdit || trigger) {
+    if (
+      awaitingInput ||
+      blockingPrompt ||
+      busy ||
+      compacting ||
+      disabled ||
+      inputDisabled ||
+      minimal ||
+      queueEdit ||
+      trigger
+    ) {
       cancelAutoSend()
     }
-  }, [busy, cancelAutoSend, disabled, inputDisabled, queueEdit, trigger])
+  }, [
+    awaitingInput,
+    blockingPrompt,
+    busy,
+    cancelAutoSend,
+    compacting,
+    disabled,
+    inputDisabled,
+    minimal,
+    queueEdit,
+    trigger
+  ])
+
+  // Leaving the window disarms: the pending countdown is not on screen, so the
+  // send would happen out of sight.
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    window.addEventListener('blur', cancelAutoSend)
+
+    return () => window.removeEventListener('blur', cancelAutoSend)
+  }, [cancelAutoSend])
 
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
@@ -966,6 +1017,7 @@ export function ChatBar({
         return
       }
 
+      cancelAutoSend()
       submitDraft()
 
       return
@@ -1048,6 +1100,7 @@ export function ChatBar({
   // live conversation state. Render-time ref assignment, same pattern as
   // dispatchSubmitRef — no effect needed for a plain mirror.
   voiceStopRef.current = { active: voiceConversationActive, end: endConversation }
+  voiceLiveRef.current = voiceConversationActive
 
   const contextMenu = (
     <ContextMenu
@@ -1318,6 +1371,7 @@ export function ChatBar({
                 return
               }
 
+              cancelAutoSend()
               submitDraft()
             }}
             ref={composerRef}

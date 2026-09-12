@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+
 export interface UseAutoSendIdleArgs {
   /** Master switch from the Settings toggle. */
   enabled: boolean
@@ -28,7 +30,18 @@ export interface AutoSendIdle {
   armedInSeconds: null | number
 }
 
-export const ARM_INPUT_TYPES = ['insertText', 'insertReplacementText'] as const
+/** Input types that mean the user (or their dictation engine) put text in. */
+export const ARM_INPUT_TYPES = [
+  'insertText',
+  'insertReplacementText',
+  // Chromium's commit of an IME composition — it can arrive as a trailing
+  // `input` right after compositionend, and must re-arm rather than cancel the
+  // timer compositionend just started.
+  'insertFromComposition',
+  // "new line" / "new paragraph" are ordinary dictation phrases.
+  'insertLineBreak',
+  'insertParagraph'
+] as const
 
 /**
  * Hands-free send: auto-submits after the user stops typing or dictating.
@@ -49,10 +62,6 @@ export function useAutoSendIdle(args: UseAutoSendIdleArgs): AutoSendIdle {
   const deadlineRef = useRef<null | number>(null)
   const armedResetKeyRef = useRef<null | string>(null)
   const isMountedRef = useRef(true)
-
-  const prevResetKeyRef = useRef(args.resetKey)
-  const prevDelayMsRef = useRef(args.delayMs)
-  const prevEnabledRef = useRef(args.enabled)
 
   const cancel = useCallback(() => {
     if (typeof window !== 'undefined') {
@@ -107,8 +116,10 @@ export function useAutoSendIdle(args: UseAutoSendIdleArgs): AutoSendIdle {
       return
     }
 
-    // Never auto-send a partially-typed slash command line.
-    if (text.trimStart().startsWith('/')) {
+    // Never auto-send a command line: a half-typed slash command must stay an
+    // explicit act. Path-like prose is not a command, so reuse the regex the
+    // submit engine itself uses.
+    if (SLASH_COMMAND_RE.test(text.trim())) {
       return
     }
 
@@ -179,10 +190,12 @@ export function useAutoSendIdle(args: UseAutoSendIdleArgs): AutoSendIdle {
 
   const noteEdit = useCallback(
     (trusted: boolean, inputType?: string) => {
+      // A trusted insert with no reported inputType still means the user (or an
+      // OS dictation engine) edited the editor — arm rather than silently never
+      // firing. Untrusted writes (draft restore, undo restore, queue-edit load)
+      // can never arm.
       const isArmInput =
-        trusted &&
-        typeof inputType === 'string' &&
-        (ARM_INPUT_TYPES as readonly string[]).includes(inputType)
+        trusted && (!inputType || (ARM_INPUT_TYPES as readonly string[]).includes(inputType))
 
       // Untrusted writes (draft restore, undo, queue edit) or non-insert inputs
       // (paste, backspace) must only cancel and never arm.
@@ -201,36 +214,12 @@ export function useAutoSendIdle(args: UseAutoSendIdleArgs): AutoSendIdle {
     arm()
   }, [arm])
 
-  // Disarm immediately when enabled flips to false.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  // Any switch or identity change disarms: a new session, delay or toggle state
+  // must never inherit a pending send from the old one. Idempotent — on mount
+  // nothing is armed.
   useEffect(() => {
-    if (prevEnabledRef.current && !args.enabled) {
-      cancel()
-    }
-
-    prevEnabledRef.current = args.enabled
-  }, [args.enabled, cancel])
-
-  // Disarm immediately when delayMs changes while armed.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (prevDelayMsRef.current !== args.delayMs) {
-      prevDelayMsRef.current = args.delayMs
-
-      if (fireTimerRef.current !== null) {
-        cancel()
-      }
-    }
-  }, [args.delayMs, cancel])
-
-  // Disarm immediately when target session/queue scope changes.
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (prevResetKeyRef.current !== args.resetKey) {
-      prevResetKeyRef.current = args.resetKey
-      cancel()
-    }
-  }, [args.resetKey, cancel])
+    cancel()
+  }, [args.delayMs, args.enabled, args.resetKey, cancel])
 
   // Clear timers on unmount so no callbacks outlive the component.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
