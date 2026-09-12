@@ -18,6 +18,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
+import { $autoSendIdleDelayMs, $autoSendIdleEnabled } from '@/store/auto-send'
 import { sessionCompacting } from '@/store/compaction'
 import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
@@ -48,6 +49,7 @@ import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-aff
 import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
+import { useAutoSendIdle } from './hooks/use-auto-send-idle'
 import { useComposerBranch } from './hooks/use-composer-branch'
 import { useComposerDraft } from './hooks/use-composer-draft'
 import { useComposerDrop } from './hooks/use-composer-drop'
@@ -423,6 +425,43 @@ export function ChatBar({
     triggerLoading
   } = useComposerTrigger({ at, draftRef, editorRef, emoji, recordUndoPoint, requestMainFocus, setComposerText, slash })
 
+  // Hands-free send: an opt-in auto-submit after the user stops producing input
+  // (typing or OS-level dictation). Off by default — see store/auto-send.
+  const autoSendEnabled = useStore($autoSendIdleEnabled)
+  const autoSendDelayMs = useStore($autoSendIdleDelayMs)
+
+  const {
+    armedInSeconds: autoSendArmedInSeconds,
+    cancel: cancelAutoSend,
+    noteCommittedComposition: noteAutoSendComposition,
+    noteEdit: noteAutoSendEdit
+  } = useAutoSendIdle({
+    canAutoSend: () =>
+      !busy &&
+      !disabled &&
+      !inputDisabled &&
+      !compacting &&
+      !queueEdit &&
+      !awaitingInput &&
+      !blockingPrompt &&
+      // An open completion popover means the text is mid-selection (`/` or `@`).
+      trigger === null &&
+      !!editorRef.current &&
+      editorRef.current.contains(document.activeElement),
+    delayMs: autoSendDelayMs,
+    enabled: autoSendEnabled,
+    onFire: submitDraft,
+    readText: () => (editorRef.current ? composerPlainText(editorRef.current) : draftRef.current),
+    resetKey: activeQueueSessionKey ?? ''
+  })
+
+  // Anything that makes a send wrong right now also disarms the pending one.
+  useEffect(() => {
+    if (busy || disabled || inputDisabled || queueEdit || trigger) {
+      cancelAutoSend()
+    }
+  }, [busy, cancelAutoSend, disabled, inputDisabled, queueEdit, trigger])
+
   // Pull the live contentEditable text into draftRef + the AUI composer state
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
@@ -476,6 +515,13 @@ export function ChatBar({
   )
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // Hands-free send: only a trusted insert arms the idle timer. A paste, a
+    // delete, or a programmatic DOM write (restored draft, undo restore, queue
+    // load) disarms it instead — none of those may ever auto-send.
+    const nativeInput = event.nativeEvent as InputEvent
+
+    noteAutoSendEdit(nativeInput.isTrusted, nativeInput.inputType)
+
     // During IME composition the DOM contains uncommitted preedit text
     // mixed with real content.  Skip state writes — compositionend flushes
     // the finalized text (see onCompositionEnd).
@@ -1017,6 +1063,7 @@ export function ChatBar({
 
   const controls = (
     <ComposerControls
+      autoSendArmedInSeconds={autoSendArmedInSeconds}
       autoSpeak={autoSpeak}
       busy={busy}
       busyAction={busyAction}
@@ -1073,6 +1120,7 @@ export function ChatBar({
           // guard forever (#44135). Clear unconditionally: by the time blur
           // runs there is nothing left composing in this editor.
           composingRef.current = false
+          cancelAutoSend()
           window.setTimeout(closeTrigger, 80)
         }}
         onCompositionEnd={event => {
@@ -1086,9 +1134,11 @@ export function ChatBar({
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
           flushEditorToDraft(event.currentTarget)
+          noteAutoSendComposition()
         }}
         onCompositionStart={event => {
           composingRef.current = true
+          cancelAutoSend()
 
           // Input events are skipped for the rest of the composition, so
           // nothing else would clear the empty marker until it ends — and the

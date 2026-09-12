@@ -36,6 +36,7 @@ export function ComposerControls({
   busy,
   busyAction,
   canSubmit,
+  autoSendArmedInSeconds,
   compactModelPill = false,
   conversation,
   disabled,
@@ -53,6 +54,7 @@ export function ComposerControls({
   busy: boolean
   busyAction: 'steer' | 'queue' | 'stop'
   canSubmit: boolean
+  autoSendArmedInSeconds?: null | number
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
@@ -145,28 +147,35 @@ export function ComposerControls({
           </Button>
         </Tip>
       ) : (
-        <Tip
-          label={
-            showStop ? (
-              <TipKeybindLabel actionId="composer.send" text={c.stop} />
-            ) : (
-              <TipKeybindLabel actionId="composer.send" text={c.send} />
-            )
-          }
-        >
-          <Button
-            aria-label={showStop ? c.stop : c.send}
-            className={PRIMARY_ICON_BTN}
-            disabled={disabled || !canSubmit}
-            type="submit"
+        <>
+          {!minimal && typeof autoSendArmedInSeconds === 'number' ? (
+            <span aria-hidden className="whitespace-nowrap text-[0.68rem] text-(--ui-text-tertiary)">
+              {c.autoSendCountdown(autoSendArmedInSeconds)}
+            </span>
+          ) : null}
+          <Tip
+            label={
+              showStop ? (
+                <TipKeybindLabel actionId="composer.send" text={c.stop} />
+              ) : (
+                <TipKeybindLabel actionId="composer.send" text={c.send} />
+              )
+            }
           >
-            {showStop ? (
-              <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
-            ) : (
-              <Codicon name="arrow-up" size="0.875rem" />
-            )}
-          </Button>
-        </Tip>
+            <Button
+              aria-label={showStop ? c.stop : c.send}
+              className={PRIMARY_ICON_BTN}
+              disabled={disabled || !canSubmit}
+              type="submit"
+            >
+              {showStop ? (
+                <span className="block size-2.5 rounded-[0.1875rem] bg-current" />
+              ) : (
+                <Codicon name="arrow-up" size="0.875rem" />
+              )}
+            </Button>
+          </Tip>
+        </>
       )}
       {/* The way out of HUD mode, riding the controls row rather than floating
           above the bar. The old chip lived in a 26px transparent strip reserved
