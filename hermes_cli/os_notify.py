@@ -173,8 +173,8 @@ def notify(title: str, body: str) -> bool:
         argv = notifier_argv(kind, title, body)
         if argv is None:
             return False
-        # ``windows_detach_popen_kwargs`` provides ``start_new_session=True`` on POSIX
-        # and the appropriate Win32 flags on Windows.
+        # ``windows_detach_popen_kwargs`` is the repo's cross-platform detach helper
+        # (``start_new_session=True`` on POSIX, Win32 creation flags on Windows).
         kwargs = windows_detach_popen_kwargs()
         # ``DEVNULL`` suppresses all output from the notification process.
         proc = subprocess.Popen(

@@ -9,7 +9,6 @@ verify the correct argv is built.
 import os
 import shutil
 import subprocess
-import sys
 from typing import List
 
 import pytest
@@ -321,11 +320,9 @@ def test_real_notifier_usable():
 def test_notify_win32_does_not_spawn(monkeypatch):
     calls = []
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: calls.append((a, kw)))
-    monkeypatch.setattr(sys, "platform", "win32")
-    assert notify("title", "body") is False
-    assert not calls
-
-    # Even if usable_kind somehow returned "win32", notifier_argv is None so no spawn occurs
+    # No Windows notifier is implemented: `usable_kind()` cannot return "win32" on a real host, and
+    # even if it did, `notifier_argv` returns None — either way nothing may be spawned. (The host is
+    # never faked here; `usable_kind` is the seam.)
     monkeypatch.setattr(hermes_cli.os_notify, "usable_kind", lambda *a, **kw: "win32")
     assert notify("title", "body") is False
     assert not calls
