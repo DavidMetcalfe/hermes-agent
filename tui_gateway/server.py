@@ -2606,10 +2606,10 @@ def _session_pending_kind(sid: str) -> str:
     # _await_gateway_decision), not _block()'s _pending registry — a session waiting on an
     # approval would otherwise report "working" instead of "waiting", and Desktop's
     # active_list poll clears the amber "needs input" dot back to blue (#86565).
-    from tools.approval import get_pending_gateway_approval
+    from tools.approval import has_blocking_approval
 
     session = _sessions.get(sid)
-    if session is not None and get_pending_gateway_approval(_session_lookup_key(session, fallback=sid)):
+    if session is not None and has_blocking_approval(_session_lookup_key(session, fallback=sid)):
         return "approval"
     return ""
 
