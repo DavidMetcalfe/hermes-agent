@@ -3,6 +3,9 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import type { ChatMessage } from '@/lib/chat-messages'
+import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
@@ -424,6 +427,90 @@ function renderSettlingReasoning() {
   return { container, settle: () => act(() => setRunning?.(false)) }
 }
 
+// The same turn as `renderSettlingReasoning`, but settled the way production
+// settles it: the optimistic rows are replaced by the committed transcript
+// rows through the real `preserveLocalPendingTurnMessages` reconcile — the
+// turn-end session-refresh path — which drops the optimistic `user-*` row in
+// favour of the committed `<epoch>.<rand>-N-user` row. The turn row is keyed
+// by that id (list.tsx `key={group.id}`), so the swap remounts the subtree.
+function renderSettlingReasoningWithIdSwap() {
+  const OPTIMISTIC_USER_ID = 'user-1700000000000-abc123'
+  const COMMITTED_USER_ID = '1789325036.467869-2-user'
+  const COMMITTED_ASSISTANT_ID = '1789325036.467869-2-assistant'
+  const prompt = 'Stream a response'
+  const answer = 'Here is the answer.'
+  const thought = 'The user asked a question.'
+
+  // Live state: the optimistic user bubble plus the still-streaming assistant
+  // tail whose reasoning part is the live preview.
+  const streamingMessages: ChatMessage[] = [
+    { id: OPTIMISTIC_USER_ID, role: 'user', parts: [{ type: 'text', text: prompt }] },
+    {
+      id: 'assistant-stream-live-1',
+      role: 'assistant',
+      parts: [{ type: 'reasoning', text: thought }],
+      pending: true
+    }
+  ]
+
+  // What the session refresh hands back the instant the turn commits: the
+  // gateway's durable rows — same content, committed-shaped ids.
+  const committedMessages: ChatMessage[] = [
+    { id: COMMITTED_USER_ID, role: 'user', parts: [{ type: 'text', text: prompt }], rowId: 42 },
+    {
+      id: COMMITTED_ASSISTANT_ID,
+      role: 'assistant',
+      parts: [
+        { type: 'reasoning', text: thought },
+        { type: 'text', text: answer }
+      ],
+      rowId: 43,
+      pending: false
+    }
+  ]
+
+  let settle: (() => string[]) | undefined
+
+  function SettlingIdSwapHarness() {
+    const [messages, setMessages] = useState<ChatMessage[]>(streamingMessages)
+    const [isRunning, setIsRunning] = useState(true)
+
+    settle = () => {
+      // Production path: the turn-end session refresh reconciles the
+      // authoritative transcript against the local optimistic tail.
+      const reconciled = preserveLocalPendingTurnMessages(committedMessages, messages)
+
+      act(() => {
+        setMessages(reconciled)
+        setIsRunning(false)
+      })
+
+      return reconciled.map(message => message.id)
+    }
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: messages.map(toRuntimeMessage),
+      isRunning,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<SettlingIdSwapHarness />)
+
+  return {
+    container,
+    settle: () => settle?.(),
+    committedIds: [COMMITTED_USER_ID, COMMITTED_ASSISTANT_ID],
+    optimisticIds: [OPTIMISTIC_USER_ID, 'assistant-stream-live-1']
+  }
+}
+
 function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
@@ -652,6 +739,38 @@ describe('assistant-ui streaming renderer', () => {
 
     settle()
 
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('true')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('keeps the live thinking preview open across the settle id swap (optimistic -> committed user row)', async () => {
+    const { container, settle, committedIds, optimisticIds } = renderSettlingReasoningWithIdSwap()
+
+    // Live: the block previews itself as it streams.
+    const liveToggle = within(container).getByRole('button', { name: /thinking/i })
+    expect(liveToggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+
+    const reconciledIds = settle() ?? []
+
+    // The reconcile must actually perform the id swap the live app performs:
+    // the optimistic rows are dropped once the committed rows with the same
+    // text arrive, so the turn row's React key changes under the list.
+    console.log('[settle-swap] reconciled message ids:', reconciledIds)
+    expect(reconciledIds).toEqual(committedIds)
+    for (const optimisticId of optimisticIds) {
+      expect(reconciledIds).not.toContain(optimisticId)
+    }
+
+    // The preview latch lives in component state; the row remount caused by
+    // the key change discards it and the block comes back collapsed. It must
+    // stay open — the live preview the user was watching cannot disappear.
     await waitFor(() => {
       expect(
         within(container)
