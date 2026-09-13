@@ -183,8 +183,34 @@ describe('messageGroupKey', () => {
       ])
     )
 
-    expect(streaming.map(group => messageGroupKey('sess-1', group))).toEqual(
-      committed.map(group => messageGroupKey('sess-1', group))
+    const born = ['user-1700000000000-abc123', 'assistant-stream-live-1']
+
+    expect(streaming.map(group => messageGroupKey('sess-1', group, born))).toEqual(
+      committed.map(group => messageGroupKey('sess-1', group, born))
+    )
+  })
+
+  it('keys a row the same when a window re-cut moves every surviving position', () => {
+    // A re-cut hands the runtime a shorter slice: the older prefix is gone, so the
+    // live turn's position in the array moves. Position-keyed rows remount here.
+    const beforeCut = buildGroups(
+      signature([
+        ['older-1', 'user', 1],
+        ['older-2', 'assistant', 1],
+        ['user-live', 'user', 1],
+        ['assistant-stream-1', 'assistant', 1]
+      ])
+    )
+
+    const afterCut = buildGroups(
+      signature([
+        ['user-live', 'user', 1],
+        ['assistant-stream-1', 'assistant', 1]
+      ])
+    )
+
+    expect(messageGroupKey('sess-1', beforeCut[1], ['', '', 'user-live', 'assistant-stream-1'])).toBe(
+      messageGroupKey('sess-1', afterCut[0], ['user-live', 'assistant-stream-1'])
     )
   })
 
@@ -199,10 +225,12 @@ describe('messageGroupKey', () => {
       ])
     )
 
-    const keys = groups.map(group => messageGroupKey('sess-1', group))
+    // No born keys: these rows predate the field and key on their durable ids.
+    const born = ['', '', '', '', '']
+    const keys = groups.map(group => messageGroupKey('sess-1', group, born))
 
     expect(new Set(keys).size).toBe(groups.length)
-    expect(groups.map(group => messageGroupKey('sess-2', group))).not.toEqual(keys)
+    expect(groups.map(group => messageGroupKey('sess-2', group, born))).not.toEqual(keys)
   })
 })
 

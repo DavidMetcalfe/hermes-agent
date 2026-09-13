@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
+import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { toRuntimeMessage } from '@/lib/chat-runtime'
 import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
@@ -428,11 +428,11 @@ function renderSettlingReasoning() {
 }
 
 // The same turn as `renderSettlingReasoning`, but settled the way production
-// settles it: the optimistic rows are replaced by the committed transcript
-// rows through the real `preserveLocalPendingTurnMessages` reconcile — the
-// turn-end session-refresh path — which drops the optimistic `user-*` row in
-// favour of the committed `<epoch>.<rand>-N-user` row. The turn row is keyed
-// by that id (list.tsx `key={group.id}`), so the swap remounts the subtree.
+// settles it: `hydrateFromStoredSession` re-reads the stored tail, converts it
+// with `toChatMessages` — committed `<epoch>.<rand>-N-user` ids in place of the
+// live `user-*` / `assistant-stream-*` ones — and grafts it onto the local array
+// through `graftRefreshedTailOntoBackfill`. The refreshed rows carry the render
+// identity they were born with, so the swap does not re-key the row element.
 function renderSettlingReasoningWithIdSwap() {
   const OPTIMISTIC_USER_ID = 'user-1700000000000-abc123'
   const COMMITTED_USER_ID = '1789325036.467869-2-user'
@@ -476,9 +476,9 @@ function renderSettlingReasoningWithIdSwap() {
     const [isRunning, setIsRunning] = useState(true)
 
     settle = () => {
-      // Production path: the turn-end session refresh reconciles the
-      // authoritative transcript against the local optimistic tail.
-      const reconciled = preserveLocalPendingTurnMessages(committedMessages, messages)
+      // Production path: the turn-end stored-tail refresh grafts the
+      // authoritative rows onto the local live tail.
+      const reconciled = graftRefreshedTailOntoBackfill(committedMessages, messages)
 
       act(() => {
         setMessages(reconciled)
@@ -509,6 +509,60 @@ function renderSettlingReasoningWithIdSwap() {
     committedIds: [COMMITTED_USER_ID, COMMITTED_ASSISTANT_ID],
     optimisticIds: [OPTIMISTIC_USER_ID, 'assistant-stream-live-1']
   }
+}
+
+// A turn that is live while the transcript window re-cuts underneath it.
+// `advanceSessionTranscriptWindow` (app/chat/transcript-window.ts) holds its cut
+// until the tail passes TRANSCRIPT_WINDOW_BUDGET + TRANSCRIPT_WINDOW_SLACK, then
+// re-cuts — "a re-cut once per ~half page of content" while streaming — and hands
+// the runtime a slice that no longer contains the older messages. The live row's
+// position in that slice moves, so anything keyed on position remounts it.
+function renderWindowRerolledReasoning() {
+  const prompt = 'Stream a response'
+  const thought = 'The user asked a question.'
+
+  const olderRows: ChatMessage[] = [
+    { id: 'older-1-user', role: 'user', parts: [{ type: 'text', text: 'an earlier prompt' }] },
+    { id: 'older-2-assistant', role: 'assistant', parts: [{ type: 'text', text: 'an earlier answer' }] }
+  ]
+
+  const liveRows: ChatMessage[] = [
+    { id: 'user-1700000000000-trimme', role: 'user', parts: [{ type: 'text', text: prompt }] },
+    {
+      id: 'assistant-stream-live-trim',
+      role: 'assistant',
+      parts: [{ type: 'reasoning', text: thought }],
+      pending: true
+    }
+  ]
+
+  let reroll: (() => void) | undefined
+
+  function WindowRerollHarness() {
+    const [messages, setMessages] = useState<ChatMessage[]>([...olderRows, ...liveRows])
+
+    reroll = () => {
+      // Exactly what a re-cut hands the runtime: the same live tail, an older
+      // prefix gone.
+      act(() => setMessages(liveRows))
+    }
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: messages.map(toRuntimeMessage),
+      isRunning: true,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<WindowRerollHarness />)
+
+  return { container, reroll: () => reroll?.() }
 }
 
 function GroupedReasoningHarness() {
@@ -831,6 +885,41 @@ describe('assistant-ui streaming renderer', () => {
           .getAttribute('aria-expanded')
       ).toBe('false')
     })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+  })
+
+  it('keeps a thinking block the reader closed closed when the transcript window re-cuts under it', async () => {
+    const { container, reroll } = renderWindowRerolledReasoning()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    // The reader closes the preview while the turn is still streaming.
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thinking/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+
+    reroll()
+
+    await waitFor(() => {
+      // The trimmed rows are gone, so the re-cut has landed.
+      expect(container.textContent).not.toContain('an earlier answer')
+    })
+
+    // Re-cutting the window moves every surviving row's position in the array
+    // the runtime holds. Keyed on that position, the row is remounted and comes
+    // back with a fresh toggle — reopening a block the reader had closed.
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 

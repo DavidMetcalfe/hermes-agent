@@ -256,32 +256,37 @@ export function buildGroups(signature: string): MessageGroup[] {
 }
 
 /**
- * The reconciliation identity of a transcript row: its POSITION in the thread,
- * scoped to the session — not the message id.
+ * The reconciliation identity of a transcript row: the key the row was born with
+ * (`ChatMessage.rowKey`), scoped to its session. Never the message id, and never
+ * the row's position in whatever array the runtime currently holds.
  *
- * A live row's id is rewritten the moment its turn commits: the settle reconcile
- * (`preserveLocalPendingTurnMessages`) drops the optimistic `user-*` row in
- * favour of its durable twin, and a streaming assistant row swaps its
- * `assistant-stream-*` id for the committed one. Keying the row on that id
- * remounted the whole turn subtree as the turn ended — the thinking preview the
- * user was watching snapped shut to its header, its measured duration was lost,
- * and every other row-local disclosure state reset with it.
+ * Two rewrites make those values unusable as a key. A live row's id is rewritten
+ * once its turn commits: the turn-end refresh hands the list the stored rows and
+ * `graftRefreshedTailOntoBackfill` carries this key onto them, so the optimistic
+ * `user-*` row gives way to its durable twin and a streaming assistant row's
+ * `assistant-stream-*` id gives way to the committed one.
+ * Separately, the runtime is handed a WINDOWED slice of the transcript
+ * (`app/chat/transcript-window.ts`), and a re-cut mid-stream drops the older
+ * prefix so every surviving row's position moves. Keying the row on either value
+ * remounted the whole turn subtree: the thinking preview the reader was watching
+ * snapped shut to its header (losing its measured duration), a preview the reader
+ * had closed reopened under them, and every other row-local disclosure state
+ * reset with it.
  *
- * Position survives that rewrite: while a turn is live its rows are replaced in
- * place, never reordered. It is the ABSOLUTE message index, so revealing an
- * older page ("Show earlier" reveals a window that was already loaded) cannot
- * shift a surviving row's key. Scoping by session stops a warm switch from
- * handing one session's row instances to another's.
- *
- * Known bound: a history rewrite that moves positions — compaction, or a
- * truncation that removes rows from the front or middle — re-keys the rows below
- * it, remounting them. That is what a rewritten transcript wants (and what it
- * did before this change). The residual runs the other way: a row that keeps its
- * position across a rewrite (a rewind that drops the tail, then regenerates it)
- * keeps its instance, and so its local disclosure state, rather than resetting.
+ * `rowKeys` holds the runtime's born keys, aligned with the message at the same
+ * index. A row without one — history hydrated before the field existed, gateway
+ * markers — falls back to its durable id, which is stable from the moment such a
+ * row appears. Scoping by session keeps a warm switch from handing one session's
+ * row instances to another's.
  */
-export function messageGroupKey(sessionKey: null | string | undefined, group: MessageGroup): string {
-  return `${sessionKey ?? ''}:${group.kind === 'turn' ? group.indices[0] : group.index}`
+export function messageGroupKey(
+  sessionKey: null | string | undefined,
+  group: MessageGroup,
+  rowKeys: readonly string[]
+): string {
+  const position = group.kind === 'turn' ? group.indices[0] : group.index
+
+  return `${sessionKey ?? ''}:${rowKeys[position] || group.id}`
 }
 
 // Walk turns newest-first, summing their render weights until the budget is met;
@@ -374,6 +379,12 @@ export function liveTailStart(
 interface TurnRowProps {
   components: ThreadMessageComponents
   group: MessageGroup
+  /** This row's messages' render identities, `|`-joined (see `rowKeySignature`).
+   *  Its message elements are keyed on them. A STRING rather than an array on
+   *  purpose: the rows array is rebuilt whenever the budget's cut advances, and a
+   *  fresh array identity would fail the shallow compare below and re-render
+   *  every mounted turn on each rebuild — the 100-800ms stall described here. */
+  identity: string
   resetKey: string
   virtualized: boolean
 }
@@ -400,7 +411,9 @@ interface TurnRowProps {
 // The live tail (newest turns) is exempt: virtualizing a turn whose final
 // size hasn't been remembered yet snaps it to a stale height when it scrolls
 // off, drifting stick-to-bottom up over old turns. See liveTailStart.
-const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized }: TurnRowProps) {
+const TurnRow = memo(function TurnRow({ components, group, identity, resetKey, virtualized }: TurnRowProps) {
+  const innerKeys = identity.split('|')
+
   return (
     <div
       className={cn(
@@ -415,12 +428,16 @@ const TurnRow = memo(function TurnRow({ components, group, resetKey, virtualized
             className="composer-human-ai-pair-container relative flex min-w-0 flex-col gap-(--conversation-turn-gap)"
             data-slot="aui_turn-pair"
           >
-            {group.indices.map(index => (
-              <ThreadPrimitive.MessageByIndex components={components} index={index} key={index} />
+            {group.indices.map((index, position) => (
+              <ThreadPrimitive.MessageByIndex
+                components={components}
+                index={index}
+                key={innerKeys[position] || index}
+              />
             ))}
           </div>
         ) : (
-          <ThreadPrimitive.MessageByIndex components={components} index={group.index} />
+          <ThreadPrimitive.MessageByIndex components={components} index={group.index} key={innerKeys[0] || group.index} />
         )}
       </MessageRenderBoundary>
     </div>
@@ -449,6 +466,19 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   const weightSignature = useAuiState(s =>
     s.thread.messages.map(message => messagePaintWeight(message.content)).join(',')
+  )
+
+  // Each message's render identity, positionally aligned with
+  // `structuralSignature` (a comma-joined list, like the weights above): the key
+  // the row was born with (`ChatMessage.rowKey`, carried across the settle
+  // reconcile), else the message id. Ids carry no comma, so the list splits
+  // cleanly — and a row's entry here never changes while the row is alive, which
+  // is what lets both the row element and its message elements keep their
+  // instances when the id is rewritten or the window re-cuts.
+  const rowKeySignature = useAuiState(s =>
+    s.thread.messages
+      .map(message => (message.metadata?.custom?.rowKey as string | undefined) ?? message.id)
+      .join(',')
   )
 
   const { t } = useI18n()
@@ -1045,19 +1075,24 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // changed (measured live: 865 wasted Block renders in one drag, walked to
   // "MessageRenderBoundary (children only)" by explain()). With it, React
   // bails out on element identity and a scroll flip re-renders nothing below.
-  const rows = useMemo(
-    () =>
-      visibleGroups.map((group, indexInVisible) => (
-        <TurnRow
-          components={components}
-          group={group}
-          key={messageGroupKey(sessionKey, group)}
-          resetKey={structuralSignature}
-          virtualized={indexInVisible < tailStart}
-        />
-      )),
-    [visibleGroups, components, structuralSignature, sessionKey, tailStart]
-  )
+  const rows = useMemo(() => {
+    const rowKeys = rowKeySignature.split(',')
+
+    return visibleGroups.map((group, indexInVisible) => (
+      <TurnRow
+        components={components}
+        group={group}
+        identity={
+          group.kind === 'turn'
+            ? group.indices.map(index => rowKeys[index] ?? '').join('|')
+            : (rowKeys[group.index] ?? '')
+        }
+        key={messageGroupKey(sessionKey, group, rowKeys)}
+        resetKey={structuralSignature}
+        virtualized={indexInVisible < tailStart}
+      />
+    ))
+  }, [visibleGroups, components, structuralSignature, sessionKey, rowKeySignature, tailStart])
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
   useStickyPromptClip({ contentRef, scrollRef, paneVisible, rows })
