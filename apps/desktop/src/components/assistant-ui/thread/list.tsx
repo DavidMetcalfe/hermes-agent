@@ -255,6 +255,28 @@ export function buildGroups(signature: string): MessageGroup[] {
   return groups
 }
 
+/**
+ * The reconciliation identity of a transcript row: its POSITION in the thread,
+ * scoped to the session — not the message id.
+ *
+ * A live row's id is rewritten the moment its turn commits: the settle reconcile
+ * (`preserveLocalPendingTurnMessages`) drops the optimistic `user-*` row in
+ * favour of its durable twin, and a streaming assistant row swaps its
+ * `assistant-stream-*` id for the committed one. Keying the row on that id
+ * remounted the whole turn subtree as the turn ended — the thinking preview the
+ * user was watching snapped shut to its header, its measured duration was lost,
+ * and every other row-local disclosure state reset with it.
+ *
+ * Position survives the rewrite: within a session a turn's rows are replaced in
+ * place, never reordered. It is the ABSOLUTE message index, so revealing an
+ * older page ("Show earlier" reveals a window that was already loaded) cannot
+ * shift a surviving row's key. Scoping by session stops a warm switch from
+ * handing one session's row instances to another's.
+ */
+export function messageGroupKey(sessionKey: null | string | undefined, group: MessageGroup): string {
+  return `${sessionKey ?? ''}:${group.kind === 'turn' ? group.indices[0] : group.index}`
+}
+
 // Walk turns newest-first, summing their render weights until the budget is met;
 // everything before the first kept turn is hidden. `minVisible` turns are kept
 // regardless of weight. Returns the index of that first visible group.
@@ -1022,12 +1044,12 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
         <TurnRow
           components={components}
           group={group}
-          key={group.id}
+          key={messageGroupKey(sessionKey, group)}
           resetKey={structuralSignature}
           virtualized={indexInVisible < tailStart}
         />
       )),
-    [visibleGroups, components, structuralSignature, tailStart]
+    [visibleGroups, components, structuralSignature, sessionKey, tailStart]
   )
 
   useMessagesBelow({ contentRef, scrollRef, isAtBottom, paneVisible, rows, sessionKey })
