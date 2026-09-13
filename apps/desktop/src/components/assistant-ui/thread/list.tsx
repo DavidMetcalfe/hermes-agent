@@ -273,11 +273,12 @@ export function buildGroups(signature: string): MessageGroup[] {
  * shift a surviving row's key. Scoping by session stops a warm switch from
  * handing one session's row instances to another's.
  *
- * Known bound: a history rewrite that moves positions — compaction, or a rewind
- * that drops the tail — re-keys the rows below it, remounting them. That is what
- * a rewritten transcript wants (and what it did before this change); the residual
- * is that a row which keeps its position across such a rewrite keeps its
- * instance, and so its local disclosure state, instead of resetting.
+ * Known bound: a history rewrite that moves positions — compaction, or a
+ * truncation that removes rows from the front or middle — re-keys the rows below
+ * it, remounting them. That is what a rewritten transcript wants (and what it
+ * did before this change). The residual runs the other way: a row that keeps its
+ * position across a rewrite (a rewind that drops the tail, then regenerates it)
+ * keeps its instance, and so its local disclosure state, rather than resetting.
  */
 export function messageGroupKey(sessionKey: null | string | undefined, group: MessageGroup): string {
   return `${sessionKey ?? ''}:${group.kind === 'turn' ? group.indices[0] : group.index}`
