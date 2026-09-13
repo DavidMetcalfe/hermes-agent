@@ -8,6 +8,7 @@ import {
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  messageGroupKey,
   resolveThreadScrollTarget,
   RUN_START_SNAP_THRESHOLD_PX,
   shouldClampTranscriptBudget,
@@ -158,6 +159,50 @@ describe('buildGroups', () => {
     const groups = buildGroups('0:a:assistant:0')
 
     expect(groups).toEqual([{ id: 'a', index: 0, kind: 'standalone', weight: 1 }])
+  })
+})
+
+describe('messageGroupKey', () => {
+  it('keeps a row keyed across the reconcile that rewrites its message ids', () => {
+    // The optimistic rows a turn streams with, and the committed rows that
+    // replace them once the turn ends (`preserveLocalPendingTurnMessages`):
+    // same shape, different ids. Re-keying the row on that swap remounts the
+    // turn subtree, which collapses a live thinking preview and discards every
+    // other row-local disclosure state with it.
+    const streaming = buildGroups(
+      signature([
+        ['user-1700000000000-abc123', 'user', 1],
+        ['assistant-stream-live-1', 'assistant', 1]
+      ])
+    )
+
+    const committed = buildGroups(
+      signature([
+        ['1789325036.467869-0-user', 'user', 1],
+        ['1789325036.467869-0-assistant', 'assistant', 1]
+      ])
+    )
+
+    expect(streaming.map(group => messageGroupKey('sess-1', group))).toEqual(
+      committed.map(group => messageGroupKey('sess-1', group))
+    )
+  })
+
+  it('keeps sibling rows distinct and scoped to their session', () => {
+    const groups = buildGroups(
+      signature([
+        ['s1', 'system', 1],
+        ['u1', 'user', 1],
+        ['a1', 'assistant', 1],
+        ['u2', 'user', 1],
+        ['a2', 'assistant', 1]
+      ])
+    )
+
+    const keys = groups.map(group => messageGroupKey('sess-1', group))
+
+    expect(new Set(keys).size).toBe(groups.length)
+    expect(groups.map(group => messageGroupKey('sess-2', group))).not.toEqual(keys)
   })
 })
 

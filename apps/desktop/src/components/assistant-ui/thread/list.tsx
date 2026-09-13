@@ -267,11 +267,17 @@ export function buildGroups(signature: string): MessageGroup[] {
  * user was watching snapped shut to its header, its measured duration was lost,
  * and every other row-local disclosure state reset with it.
  *
- * Position survives the rewrite: within a session a turn's rows are replaced in
+ * Position survives that rewrite: while a turn is live its rows are replaced in
  * place, never reordered. It is the ABSOLUTE message index, so revealing an
  * older page ("Show earlier" reveals a window that was already loaded) cannot
  * shift a surviving row's key. Scoping by session stops a warm switch from
  * handing one session's row instances to another's.
+ *
+ * Known bound: a history rewrite that moves positions — compaction, or a rewind
+ * that drops the tail — re-keys the rows below it, remounting them. That is what
+ * a rewritten transcript wants (and what it did before this change); the residual
+ * is that a row which keeps its position across such a rewrite keeps its
+ * instance, and so its local disclosure state, instead of resetting.
  */
 export function messageGroupKey(sessionKey: null | string | undefined, group: MessageGroup): string {
   return `${sessionKey ?? ''}:${group.kind === 'turn' ? group.indices[0] : group.index}`

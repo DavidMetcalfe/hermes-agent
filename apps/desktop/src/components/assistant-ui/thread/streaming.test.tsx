@@ -762,8 +762,8 @@ describe('assistant-ui streaming renderer', () => {
     // The reconcile must actually perform the id swap the live app performs:
     // the optimistic rows are dropped once the committed rows with the same
     // text arrive, so the turn row's React key changes under the list.
-    console.log('[settle-swap] reconciled message ids:', reconciledIds)
     expect(reconciledIds).toEqual(committedIds)
+
     for (const optimisticId of optimisticIds) {
       expect(reconciledIds).not.toContain(optimisticId)
     }
@@ -779,6 +779,59 @@ describe('assistant-ui streaming renderer', () => {
       ).toBe('true')
     })
     expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('keeps a thinking block the reader closed closed across the settle id swap', async () => {
+    const { container, settle } = renderSettlingReasoningWithIdSwap()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    // The reader closes the preview they were watching.
+    fireEvent.click(toggle)
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thinking/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+  })
+
+  it('stays collapsed across the settle id swap when the collapsed-by-default preference is enabled', async () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container, settle } = renderSettlingReasoningWithIdSwap()
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {
