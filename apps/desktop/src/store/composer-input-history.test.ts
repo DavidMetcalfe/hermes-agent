@@ -1,13 +1,17 @@
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  $historyArrowsEnabled,
   $perSessionBrowse,
   browseBackward,
   browseForward,
   deriveUserHistory,
   isBrowsingHistory,
-  resetBrowseState
+  resetBrowseState,
+  setHistoryArrowsEnabled
 } from './composer-input-history'
+
+const ARROWS_KEY = 'hermes.desktop.composerHistory.arrowsEnabled'
 
 const SESSION_A = 'session-a'
 const SESSION_B = 'session-b'
@@ -134,5 +138,44 @@ describe('session switch behavior', () => {
     expect(browseBackward(SESSION_B, '', sessionBHistory)).toBe('world-b')
     expect(browseBackward(SESSION_B, '', sessionBHistory)).toBe('hello-b')
     expect(isBrowsingHistory(SESSION_A)).toBe(false)
+  })
+})
+
+describe('arrow-history preference', () => {
+  beforeEach(() => {
+    window.localStorage.removeItem(ARROWS_KEY)
+  })
+
+  it('defaults to on when nothing is stored', () => {
+    expect($historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('disabling persists the choice and drops in-flight browse state', () => {
+    browseBackward(SESSION_A, 'draft', HISTORY)
+
+    expect(isBrowsingHistory(SESSION_A)).toBe(true)
+
+    setHistoryArrowsEnabled(false)
+
+    expect(window.localStorage.getItem(ARROWS_KEY)).toBe('false')
+    expect($historyArrowsEnabled.get()).toBe(false)
+    expect($perSessionBrowse.get()).toEqual({})
+  })
+
+  it('re-enabling persists the choice', () => {
+    setHistoryArrowsEnabled(false)
+    setHistoryArrowsEnabled(true)
+
+    expect(window.localStorage.getItem(ARROWS_KEY)).toBe('true')
+    expect($historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('reads a stored false back as off after a reload', async () => {
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    vi.resetModules()
+
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
   })
 })
