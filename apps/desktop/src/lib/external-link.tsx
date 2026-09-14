@@ -262,11 +262,13 @@ function openLinksInPreview(): boolean {
  * no business in the webview and always hands off to the OS. The HUD has no
  * browser pane, so it always takes the OS path.
  *
- * `desktop.open_links_in_preview` inverts the default gesture: when false a
- * bare click opens in the system browser and the open-elsewhere gesture opens
- * in the preview pane. The always-OS cases above are unaffected.
+ * `desktop.open_links_in_preview` inverts the gesture: when false a bare click
+ * opens in the system browser and `gesture` opens in the preview pane. The
+ * always-OS cases above are unaffected — including `native`, which is authored
+ * intent rather than a gesture (a console you are signed into over there never
+ * belongs in the pane, whatever the setting says).
  */
-export function openLink(href: string, options: { native?: boolean } = {}): void {
+export function openLink(href: string, options: { gesture?: boolean; native?: boolean } = {}): void {
   const target = normalizeExternalUrl(href)
 
   if (!target) {
@@ -274,6 +276,7 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   }
 
   if (
+    options.native ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||
     !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
@@ -283,9 +286,10 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
     return
   }
 
-  // `options.native` is the open-elsewhere gesture — the destination the user
-  // asked for is whichever one the config did NOT make the default.
-  const wantsPreview = openLinksInPreview() !== Boolean(options.native)
+  // `gesture` is the open-elsewhere modifier (⌘/Ctrl-click, middle-click,
+  // terminal ⇧-click): it takes whichever destination the config did NOT make
+  // the default.
+  const wantsPreview = openLinksInPreview() !== Boolean(options.gesture)
 
   if (!wantsPreview) {
     openExternalLink(target)
@@ -358,7 +362,7 @@ export function ExternalLink({
 
         event.preventDefault()
         event.stopPropagation()
-        openLink(target, { native: true })
+        openLink(target, { gesture: true, native })
       }}
       onClick={event => {
         event.stopPropagation()
@@ -369,7 +373,7 @@ export function ExternalLink({
         }
 
         event.preventDefault()
-        openLink(target, { native: native || wantsNativeBrowser(event.nativeEvent) })
+        openLink(target, { gesture: wantsNativeBrowser(event.nativeEvent), native })
       }}
       rel="noopener noreferrer"
       target="_blank"

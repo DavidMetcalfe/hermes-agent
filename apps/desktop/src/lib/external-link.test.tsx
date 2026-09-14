@@ -202,6 +202,21 @@ describe('external link helpers', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
+  // `native` is authored intent, not a gesture: the pane has no signed-in
+  // session for a console, so inverting the setting must not strand these.
+  it('keeps an authored-native link on the OS browser when open_links_in_preview is off', () => {
+    const openExternal = vi.fn().mockResolvedValue(undefined)
+    installDesktopBridge({ openExternal: openExternal as unknown as Window['hermesDesktop']['openExternal'] })
+    setOpenLinksInPreview(false)
+
+    render(<MarkdownLinkText text="Enable the [Docs API](https://console.cloud.google.com/apis/library) first." />)
+
+    fireEvent.click(screen.getByRole('link', { name: 'Docs API' }))
+
+    expect(openExternal).toHaveBeenCalledWith('https://console.cloud.google.com/apis/library')
+    expect($previewTabs.get()).toHaveLength(0)
+  })
+
   it('treats only the HUD renderer as a native-link surface', () => {
     expect(hudForcesNativeLinks('')).toBe(false)
     expect(hudForcesNativeLinks('?win=secondary')).toBe(false)
