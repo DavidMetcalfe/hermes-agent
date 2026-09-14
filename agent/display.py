@@ -990,6 +990,22 @@ def _cute_skill_view(a: dict, _r) -> str:
     return f"┊ 📚 skill     {_cute_trunc(label)}"
 
 
+_SKILL_MANAGE_VERBS = {
+    "create": "created", "patch": "updated", "edit": "updated",
+    "write_file": "wrote", "remove_file": "removed", "delete": "deleted",
+}
+
+
+def _cute_skill_manage(a: dict, r) -> str:
+    """Completion line naming the skill a ``skill_manage`` call created or changed."""
+    action = str(a.get("action") or "").lower()
+    name = _cute_trunc(a.get("name") or a.get("skill") or "skill")
+    verb = _SKILL_MANAGE_VERBS.get(action, action or "updated")
+    if r is not None and not _result_succeeded(r):
+        verb = action or "skill"          # failed: report the intent, the failure suffix marks the outcome
+    return f"┊ 📚 skill     {verb} {name}"
+
+
 def _cute_cronjob(a: dict, _r) -> str:
     action = a.get("action", "?")
     if action == "create":
@@ -1052,6 +1068,7 @@ _CUTE_LINES = {
     "memory": _cute_memory,
     "skills_list": lambda a, r: f"┊ 📚 skills    list {a.get('category', 'all')}",
     "skill_view": _cute_skill_view,
+    "skill_manage": _cute_skill_manage,
     "image_generate": lambda a, r: f"┊ 🎨 create    {_cute_trunc(a.get('prompt', ''))}",
     "text_to_speech": lambda a, r: f"┊ 🔊 speak     {_cute_trunc(a.get('text', ''))}",
     "vision_analyze": lambda a, r: f"┊ 👁️  vision    {_cute_trunc(a.get('question', ''))}",

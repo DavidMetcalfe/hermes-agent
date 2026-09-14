@@ -200,6 +200,75 @@ class TestCuteToolMessagePreviewLength:
         assert text in line
 
 
+class TestCuteSkillManage:
+    """skill_manage completion lines must name the skill that was created/changed (#52085)."""
+
+    def test_create_success_names_the_skill_and_verb(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "deploy-runbook"},
+            0.1,
+            result='{"success": true, "message": "Skill \'deploy-runbook\' created."}',
+        )
+        assert "created" in line
+        assert "deploy-runbook" in line
+
+    def test_patch_success_reports_updated(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "patch", "name": "x"},
+            0.1,
+            result='{"success": true, "message": "Skill \'x\' patched."}',
+        )
+        assert "updated" in line
+        assert " x" in line
+
+    def test_failed_create_does_not_claim_created(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "deploy-runbook"},
+            0.1,
+            result='{"success": false, "error": "A skill named deploy-runbook already exists"}',
+        )
+        assert "created" not in line
+
+    def test_missing_name_still_returns_well_formed_line(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create"},
+            0.1,
+            result='{"success": true}',
+        )
+        assert line.startswith("┊")
+        assert "created" in line
+        assert line.endswith("0.1s")
+
+    def test_blank_name_still_returns_well_formed_line(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "delete", "name": "   "},
+            0.1,
+            result='{"success": true}',
+        )
+        assert line.startswith("┊")
+        assert "deleted" in line
+        assert line.endswith("0.1s")
+
+    def test_long_name_respects_configured_preview_cap(self):
+        set_tool_preview_max_len(20)
+        name = "a-very-long-skill-name-that-exceeds-the-cap"
+
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": name},
+            0.1,
+            result='{"success": true}',
+        )
+
+        assert name not in line
+        assert "..." in line
+
+
 class TestEditDiffPreview:
 
 
