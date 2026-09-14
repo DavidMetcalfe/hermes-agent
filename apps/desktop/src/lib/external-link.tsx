@@ -1,8 +1,11 @@
 import type { ComponentProps, ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 
+import { HERMES_CONFIG_KEY } from '@/app/hooks/use-config-record'
 import { ArrowUpRight } from '@/lib/icons'
 import { IS_MAC } from '@/lib/keybinds/combo'
+import { queryClient } from '@/lib/query-client'
+import type { HermesConfigRecord } from '@/types/hermes'
 
 import { resolveBrandIcon } from './brand-icon'
 import { cn } from './utils'
@@ -235,6 +238,19 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
 }
 
 /**
+ * `desktop.open_links_in_preview`, read from the shared config record the app
+ * fetches at boot. Anything but an explicit `false` keeps the historical
+ * default — the in-app pane — so an older backend, a record still loading, or a
+ * config the user never touched all behave as before.
+ */
+function openLinksInPreview(): boolean {
+  const config = queryClient.getQueryData<HermesConfigRecord>(HERMES_CONFIG_KEY)
+  const desktop = config?.desktop as { open_links_in_preview?: unknown } | undefined
+
+  return desktop?.open_links_in_preview !== false
+}
+
+/**
  * Where a link the user clicked should open.
  *
  * A web page opens in the in-app browser — that pane exists so reading a doc
@@ -245,6 +261,10 @@ export function hudForcesNativeLinks(search = typeof window === 'undefined' ? ''
  * Everything that ISN'T a web page — `mailto:`, `file:`, a custom scheme — has
  * no business in the webview and always hands off to the OS. The HUD has no
  * browser pane, so it always takes the OS path.
+ *
+ * `desktop.open_links_in_preview` inverts the default gesture: when false a
+ * bare click opens in the system browser and the open-elsewhere gesture opens
+ * in the preview pane. The always-OS cases above are unaffected.
  */
 export function openLink(href: string, options: { native?: boolean } = {}): void {
   const target = normalizeExternalUrl(href)
@@ -254,11 +274,20 @@ export function openLink(href: string, options: { native?: boolean } = {}): void
   }
 
   if (
-    options.native ||
     isConnectorAuthorizationLink(target) ||
     hudForcesNativeLinks() ||
     !/^https?:$/i.test(parseUrl(target)?.protocol ?? '')
   ) {
+    openExternalLink(target)
+
+    return
+  }
+
+  // `options.native` is the open-elsewhere gesture — the destination the user
+  // asked for is whichever one the config did NOT make the default.
+  const wantsPreview = openLinksInPreview() !== Boolean(options.native)
+
+  if (!wantsPreview) {
     openExternalLink(target)
 
     return
@@ -329,7 +358,7 @@ export function ExternalLink({
 
         event.preventDefault()
         event.stopPropagation()
-        openExternalLink(target)
+        openLink(target, { native: true })
       }}
       onClick={event => {
         event.stopPropagation()
