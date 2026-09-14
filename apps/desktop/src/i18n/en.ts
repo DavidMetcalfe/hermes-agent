@@ -1943,6 +1943,7 @@ export const en: Translations = {
     refresh: 'Refresh',
     refreshing: 'Refreshing...',
     noResults: 'No matching results found.',
+    searching: 'Searching…',
     pinSession: 'Pin session',
     unpinSession: 'Unpin session',
     exportSession: 'Export session',
