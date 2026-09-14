@@ -227,12 +227,15 @@ class SessionActiveItem(Result):
     """``server._session_live_item``."""
 
     current: bool
+    hidden: bool
     id: str
     last_active: float
     message_count: int
     model: str
     preview: str
+    profile: str
     session_key: str
+    source: str
     started_at: float
     status: LiveSessionStatus
     title: str

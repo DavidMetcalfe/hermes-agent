@@ -16877,12 +16877,15 @@ def test_session_active_list_reports_live_sessions(monkeypatch):
     rows = {row["id"]: row for row in session_rows}
     assert rows["sid-a"] == {
         "current": False,
+        "hidden": False,
         "id": "sid-a",
         "last_active": 20.0,
         "message_count": 1,
         "model": "model-a",
         "preview": "find docs",
+        "profile": server._current_profile_name(),
         "session_key": "key-a",
+        "source": server._resolve_session_platform(),
         "started_at": 10.0,
         "status": "idle",
         "title": "Research",
@@ -16941,6 +16944,80 @@ def test_session_active_list_excludes_finalized_sessions(monkeypatch):
     session_rows = resp["result"]["sessions"]
     assert [row["id"] for row in session_rows] == ["sid-live"]
 
+
+def test_session_active_item_reports_source_hidden_and_profile(monkeypatch):
+    """#50799: the sidebar's live-sessions section must be able to EXCLUDE live sessions born hidden
+    (Bot Chat canonical chats, room plumbing) and group the rest by profile — none of which today's
+    payload can discriminate before the first prompt persists a DB row."""
+
+    class _DB:
+        def get_session_title(self, key):
+            return ""
+
+    previous_sessions = dict(server._sessions)
+    server._sessions.clear()
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    # A gateway-minted bot chat: born hidden (pending_hidden is deferred row-write intent that is
+    # never cleared, so it stays the live truth), keyed to a named profile.
+    server._sessions["sid-hidden"] = _session(
+        agent=types.SimpleNamespace(model="model-a"),
+        session_key="key-hidden",
+        source="telegram",
+        pending_hidden=True,
+        profile_home="/home/u/.hermes/profiles/work",
+    )
+    # An ordinary desktop draft: visible, on the launch profile (no profile_home stamped).
+    server._sessions["sid-plain"] = _session(
+        agent=types.SimpleNamespace(model="model-b"),
+        session_key="key-plain",
+        source="desktop",
+    )
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.active_list", "params": {}}
+        )
+    finally:
+        server._sessions.clear()
+        server._sessions.update(previous_sessions)
+
+    rows = {row["id"]: row for row in resp["result"]["sessions"]}
+    assert rows["sid-hidden"]["hidden"] is True
+    assert rows["sid-hidden"]["source"] == "telegram"
+    assert rows["sid-hidden"]["profile"] == "work"
+    assert rows["sid-plain"]["hidden"] is False
+    assert rows["sid-plain"]["source"] == "desktop"
+    # No profile_home: the launch profile owns the live session.
+    assert rows["sid-plain"]["profile"] == server._current_profile_name()
+    # Additive: every pre-existing field keeps its name (the payload stays a superset, never a rename).
+    assert {
+        "current", "hidden", "id", "last_active", "message_count", "model", "preview",
+        "profile", "session_key", "source", "started_at", "status", "title",
+    } == set(rows["sid-plain"])
+
+
+def test_session_active_list_reports_hidden_for_created_sessions(monkeypatch):
+    """#50799 end-to-end: ``session.create(hidden=true, source=...)`` must reach the live payload —
+    a session a non-desktop client minted over the gateway is invisible to the sidebar's eligibility
+    filter without it."""
+    monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+    server._sessions.clear()
+    try:
+        hidden_sid = server.handle_request(
+            {"id": "1", "method": "session.create", "params": {"source": "telegram", "hidden": True}}
+        )["result"]["session_id"]
+        plain_sid = server.handle_request(
+            {"id": "2", "method": "session.create", "params": {}}
+        )["result"]["session_id"]
+        resp = server.handle_request(
+            {"id": "3", "method": "session.active_list", "params": {}}
+        )
+    finally:
+        server._sessions.clear()
+
+    rows = {row["id"]: row for row in resp["result"]["sessions"]}
+    assert rows[hidden_sid]["hidden"] is True
+    assert rows[hidden_sid]["source"] == "telegram"
+    assert rows[plain_sid]["hidden"] is False
 
 
 def test_session_activate_returns_inflight_stream_before_completion(monkeypatch):

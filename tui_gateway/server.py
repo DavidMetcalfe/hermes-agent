@@ -2671,11 +2671,21 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         preview = " ".join(str(inflight.get("assistant") or inflight.get("user") or preview).split())[:160]
     now = time.time()
     return {
-        "current": sid == current_sid, "id": sid,
+        "current": sid == current_sid,
+        # #50799: a session created over the gateway by a non-desktop client is sidebar-invisible until
+        # its first prompt persists a DB row; surfacing live sessions needs these discriminators in the
+        # live payload so clients can exclude hidden-born sessions (Bot Chat canonical chats, room
+        # plumbing) and group by profile without a per-session DB read on a 1.5s poll.
+        # ``pending_hidden`` is retained for the session's life — _ensure_session_db_row applies and
+        # re-reads the intent but never clears it — so it is the live truth, no mirror needed.
+        "hidden": bool(session.get("pending_hidden")),
+        "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()), "preview": preview,
-        "session_key": key, "started_at": float(session.get("created_at") or now), "status": status,
+        "profile": profile_name_for_home(session.get("profile_home")) or _current_profile_name(),
+        "session_key": key, "source": _session_source(session),
+        "started_at": float(session.get("created_at") or now), "status": status,
         "title": _session_live_title(session, key),
     }
 

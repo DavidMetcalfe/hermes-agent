@@ -23412,6 +23412,10 @@
             "title": "Current",
             "type": "boolean"
           },
+          "hidden": {
+            "title": "Hidden",
+            "type": "boolean"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -23432,8 +23436,16 @@
             "title": "Preview",
             "type": "string"
           },
+          "profile": {
+            "title": "Profile",
+            "type": "string"
+          },
           "session_key": {
             "title": "Session Key",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
             "type": "string"
           },
           "started_at": {
@@ -23450,12 +23462,15 @@
         },
         "required": [
           "current",
+          "hidden",
           "id",
           "last_active",
           "message_count",
           "model",
           "preview",
+          "profile",
           "session_key",
+          "source",
           "started_at",
           "status",
           "title"
