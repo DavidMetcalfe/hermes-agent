@@ -1,8 +1,13 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/types/hermes'
+import type { SessionInfo, SessionSearchResult } from '@/types/hermes'
 
-import { sessionMatchesSearch } from './session-search'
+import {
+  mergeSessionSearchResults,
+  searchResultToSession,
+  sessionMatchesSearch,
+  stripFtsMarkers
+} from './session-search'
 
 function makeSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -68,5 +73,157 @@ describe('sessionMatchesSearch', () => {
 
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
+  })
+})
+
+describe('stripFtsMarkers', () => {
+  it('removes the sqlite snippet() highlight delimiters', () => {
+    expect(stripFtsMarkers('fix >>>session<<< search in <<<Desktop>>>')).toBe('fix session search in Desktop')
+  })
+
+  it('leaves plain text and empty strings untouched', () => {
+    expect(stripFtsMarkers('no markers here')).toBe('no markers here')
+    expect(stripFtsMarkers('')).toBe('')
+  })
+
+  it('removes every marker pair, not just the first', () => {
+    expect(stripFtsMarkers('>>>a<<< and >>>b<<< and >>>c<<<')).toBe('a and b and c')
+  })
+})
+
+describe('searchResultToSession', () => {
+  it("carries the server's title, archived flag, timestamps and lineage through", () => {
+    const result: SessionSearchResult = {
+      archived: true,
+      last_active: 1_800_000_200,
+      lineage_root: '20260602_235959_root99',
+      model: 'claude',
+      preview: 'please summarize artifacts',
+      role: null,
+      session_id: '20260603_010000_tip01',
+      session_started: 1_800_000_000,
+      snippet: 'please >>>summarize<<< artifacts',
+      source: 'cli',
+      started_at: 1_800_000_100,
+      title: 'Recent content session'
+    }
+
+    const session = searchResultToSession(result)
+
+    // Resume identity is the live compression tip, not the lineage root.
+    expect(session.id).toBe('20260603_010000_tip01')
+    expect(session._lineage_root_id).toBe('20260602_235959_root99')
+    expect(session.archived).toBe(true)
+    expect(session.title).toBe('Recent content session')
+    // started_at wins over the older session_started; last_active passes through.
+    expect(session.started_at).toBe(1_800_000_100)
+    expect(session.last_active).toBe(1_800_000_200)
+    expect(session.model).toBe('claude')
+    expect(session.source).toBe('cli')
+    // The preview comes from the marker-stripped snippet.
+    expect(session.preview).toBe('please summarize artifacts')
+  })
+
+  it('falls back gracefully on a minimal payload', () => {
+    vi.useFakeTimers()
+
+    try {
+      vi.setSystemTime(new Date(1_800_000_500 * 1000))
+
+      const session = searchResultToSession({
+        model: null,
+        role: null,
+        session_id: '20260604_120000_min01',
+        session_started: 1_800_000_000,
+        snippet: '>>>bare<<< hit',
+        source: null
+      })
+
+      expect(session.archived).toBe(false)
+      expect(session.title).toBeNull()
+      // No started_at: session_started stands in for both clocks.
+      expect(session.started_at).toBe(1_800_000_000)
+      expect(session.last_active).toBe(1_800_000_000)
+      expect(session.preview).toBe('bare hit')
+      expect(session._lineage_root_id).toBeNull()
+      expect(session.model).toBeNull()
+      expect(session.source).toBeNull()
+      expect(session.is_active).toBe(false)
+      expect(session.message_count).toBe(0)
+      expect(session.cwd).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('nulls the preview when the stripped snippet is blank', () => {
+    const session = searchResultToSession({
+      model: null,
+      role: null,
+      session_id: 'x',
+      session_started: null,
+      snippet: '>>><<<',
+      source: null
+    })
+
+    expect(session.preview).toBeNull()
+  })
+})
+
+describe('mergeSessionSearchResults', () => {
+  const local = makeSession({ id: 'local-1', preview: 'client match' })
+
+  const serverHit = (id: string, overrides: Partial<SessionSearchResult> = {}): SessionSearchResult => ({
+    model: null,
+    role: null,
+    session_id: id,
+    session_started: 1_000,
+    snippet: `hit for ${id}`,
+    source: null,
+    ...overrides
+  })
+
+  it('keeps local-only matches untouched', () => {
+    const merged = mergeSessionSearchResults([local], [])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(local)
+  })
+
+  it('synthesizes rows for server-only matches', () => {
+    const merged = mergeSessionSearchResults([], [serverHit('server-1', { title: 'Server title' })])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].id).toBe('server-1')
+    expect(merged[0].title).toBe('Server title')
+    expect(merged[0].preview).toBe('hit for server-1')
+  })
+
+  it('lets the local row win when both sides match the same id', () => {
+    const merged = mergeSessionSearchResults([local], [serverHit('local-1')])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(local)
+  })
+
+  it('prefers an already-loaded session over a synthesized row', () => {
+    const loaded = makeSession({ id: 'server-1', preview: 'loaded row' })
+    const merged = mergeSessionSearchResults([], [serverHit('server-1')], new Map([[loaded.id, loaded]]))
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(loaded)
+  })
+
+  it('orders local matches before server matches', () => {
+    const local2 = makeSession({ id: 'local-2' })
+    const merged = mergeSessionSearchResults([local, local2], [serverHit('server-1'), serverHit('server-2')])
+
+    expect(merged.map(s => s.id)).toEqual(['local-1', 'local-2', 'server-1', 'server-2'])
+  })
+
+  it('skips server hits without a usable session id', () => {
+    const merged = mergeSessionSearchResults([], [serverHit(''), serverHit('server-3')])
+
+    expect(merged.map(s => s.id)).toEqual(['server-3'])
   })
 })
