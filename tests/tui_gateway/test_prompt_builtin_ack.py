@@ -53,7 +53,7 @@ def server(hermes_home, monkeypatch):
     __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
-def _dispatch(server, name: str, arg: str = "") -> dict:
+def _dispatch(server, name: str, arg: str | None = "") -> dict:
     mod, sid = server
     resp = mod.handle_request({
         "id": "r1",
@@ -107,6 +107,52 @@ def test_plan_notice_truncates_long_task(server):
     task = "x" * 100
     result = _dispatch(server, "plan", task)
     assert result["notice"] == f"Planning: {'x' * 80}…"
+
+
+# null / whitespace-only arg --------------------------------------------------
+# ``CommandDispatchParams.arg`` is ``str | None`` (contracts/tools_commands.py) and
+# ``validate_params`` defers type/required checks to handlers (contracts/registry.py), so an
+# explicit ``"arg": null`` reaches here. ``params.get("arg", "")`` does NOT default a
+# present-but-null key, so the handlers must normalise before touching the string.
+
+
+def test_learn_with_null_arg_behaves_as_bare(server):
+    result = _dispatch(server, "learn", None)
+    assert result["type"] == "send"
+    assert result["notice"] == "Learning a skill from this conversation…"
+    assert result["display"] == "/learn"
+    assert "[/learn]" in result["message"]
+
+
+def test_plan_with_null_arg_behaves_as_bare(server):
+    result = _dispatch(server, "plan", None)
+    assert result["type"] == "send"
+    assert result["notice"] == "Planning from this conversation's context…"
+    assert result["display"] == "/plan"
+
+
+def test_init_with_null_arg_behaves_as_bare(server, tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    result = _dispatch(server, "init", None)
+    assert result["type"] == "send"
+    assert result["notice"] == "Generating AGENTS.md from a project scan…"
+    assert result["display"] == "/init"
+    assert "[/init]" in result["message"]
+
+
+def test_whitespace_only_arg_normalizes_to_the_bare_form(server):
+    result = _dispatch(server, "learn", "   ")
+    assert result["notice"] == "Learning a skill from this conversation…"
+    assert result["display"] == "/learn"
+
+
+def test_surrounding_whitespace_is_stripped_but_inner_text_kept(server):
+    multi = "\n  refactor   the parser  \n"
+    result = _dispatch(server, "plan", multi)
+    assert result["display"] == "/plan refactor   the parser"
+    # internal whitespace/newlines reach the builder verbatim, only edges are trimmed
+    assert "refactor   the parser" in result["message"]
+    assert not result["message"].startswith("\n")
 
 
 # /init ----------------------------------------------------------------------

@@ -622,6 +622,9 @@ def _prompt_builtin(module: str, fn: str, ack, kw: str = ""):
     the slash command, not the model-facing builder prompt (#52085)."""
 
     def cmd(rid, params, session, name, arg):
+        # The wire contract allows null (`CommandDispatchParams.arg: str | None`); the builders
+        # and every other surface treat it as an empty request.
+        arg = (arg or "").strip()
         build = getattr(_tools_mod(module), fn)
         message = build(**{kw: arg}) if kw else build(arg)
         return _ok(rid, {
