@@ -16957,8 +16957,9 @@ def test_session_active_item_reports_source_hidden_and_profile(monkeypatch):
     previous_sessions = dict(server._sessions)
     server._sessions.clear()
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    # A gateway-minted bot chat: born hidden (pending_hidden is deferred row-write intent that is
-    # never cleared, so it stays the live truth), keyed to a named profile.
+    # A gateway-minted bot chat: born hidden. ``pending_hidden`` carries the born-hidden intent
+    # _ensure_session_db_row applies — and every later flip of a LIVE session writes it too
+    # (session.set_hidden), so the payload never reports a hidden live session as visible.
     server._sessions["sid-hidden"] = _session(
         agent=types.SimpleNamespace(model="model-a"),
         session_key="key-hidden",
@@ -16988,11 +16989,13 @@ def test_session_active_item_reports_source_hidden_and_profile(monkeypatch):
     assert rows["sid-plain"]["source"] == "desktop"
     # No profile_home: the launch profile owns the live session.
     assert rows["sid-plain"]["profile"] == server._current_profile_name()
-    # Additive: every pre-existing field keeps its name (the payload stays a superset, never a rename).
+    # Additive contract: every field a client already reads keeps its name. A SUBSET check on
+    # purpose — set equality here would make every future additive field edit this test (a
+    # change detector); what matters is that nothing was renamed or dropped.
     assert {
-        "current", "hidden", "id", "last_active", "message_count", "model", "preview",
-        "profile", "session_key", "source", "started_at", "status", "title",
-    } == set(rows["sid-plain"])
+        "current", "id", "last_active", "message_count", "model", "preview",
+        "session_key", "started_at", "status", "title",
+    } <= set(rows["sid-plain"])
 
 
 def test_session_active_list_reports_hidden_for_created_sessions(monkeypatch):

@@ -25,6 +25,13 @@ import type { SessionInfo } from '@/types/hermes'
  * poll (use-background-sync); a connection/profile switch must call
  * `clearLiveSessions()` alongside the other gateway-bound store wipes
  * (see store/gateway-switch.ts).
+ *
+ * One duplicate the dedupe cannot catch inside its own poll cycle:
+ * auto-compression rotates a live session's `session_key` to the new tip while
+ * Recents still projects the OLD tip, whose lineage does not contain the new
+ * key — for up to the stored refresh's trailing gap (`SESSIONS_LIST_TICK_GAP_MS`)
+ * the session can show in both lists. It self-heals on the next list refresh and
+ * this group's rows are read-only, so the cost is cosmetic.
  */
 export const $liveSessions = atom<SessionInfo[]>([])
 
@@ -97,18 +104,24 @@ function snapshotsEqual(a: readonly SessionInfo[], b: readonly SessionInfo[]): b
 }
 
 /** True when this live session is already represented by a row the sidebar
- *  (or the owner ladder) knows: a stored slice row matched by STORED id —
- *  `sessionMatchesStoredId` also counts lineage roots and compression tips,
- *  so a rotated id never double-lists — an unlisted-draft owner stub, or a
- *  delete/archive tombstone still awaiting backend confirmation.
+ *  knows: a stored slice row matched by STORED id — `sessionMatchesStoredId`
+ *  also counts lineage roots and compression tips, so a rotated id never
+ *  double-lists — an unlisted-draft owner stub, or a delete/archive tombstone
+ *  still awaiting backend confirmation.
  *
- *  An open session TILE is deliberately NOT a representation here: a row click
- *  opens `in-place`, which loads into main (`app/open-session.ts`), never a
- *  tile, and this renderer's own draft tiles are covered by their owner stubs
- *  (or the optimistic row) anyway. Counting tiles would drop the row of the
- *  session the user just clicked while it still has no stored row — the group
- *  would look like it ate the session. A stored row whose tile is open stays
- *  listed for the same reason (`sessionsToKeep`). */
+ *  Deliberately NOT the owner ladder: `ownerLookupSessionRows()` reads the
+ *  stored slices and the draft stubs, never this atom. A live row's owner
+ *  reaches resolution through `onResumeSession(session.id, session)` — the
+ *  callback carries the stamped row — which is why every live row must keep
+ *  its `connection_id` and `profile` stamps.
+ *
+ *  An open session TILE is deliberately NOT a representation here either: a
+ *  row click opens `in-place`, which loads into main (`app/open-session.ts`),
+ *  never a tile, and this renderer's own draft tiles are covered by their owner
+ *  stubs (or the optimistic row) anyway. Counting tiles would drop the row of
+ *  the session the user just clicked while it still has no stored row — the
+ *  group would look like it ate the session. A stored row whose tile is open
+ *  stays listed for the same reason (`sessionsToKeep`). */
 function isAlreadyRepresented(sessionKey: string): boolean {
   const tombstones = $removedSessionIds.get()
 

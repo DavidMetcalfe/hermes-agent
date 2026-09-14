@@ -2676,8 +2676,11 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         # its first prompt persists a DB row; surfacing live sessions needs these discriminators in the
         # live payload so clients can exclude hidden-born sessions (Bot Chat canonical chats, room
         # plumbing) and group by profile without a per-session DB read on a 1.5s poll.
-        # ``pending_hidden`` is retained for the session's life — _ensure_session_db_row applies and
-        # re-reads the intent but never clears it — so it is the live truth, no mirror needed.
+        # ``pending_hidden`` carries BOTH the born-hidden intent _ensure_session_db_row applies and
+        # every later flip made through ``session.set_hidden`` on a live session, so it is the truth
+        # for this process's registry — a hide written straight to the store by ANOTHER surface is
+        # mirrored by ``note_live_session_hidden`` (same process only: a foreign process's sessions
+        # are not this registry's, and it does not report them).
         "hidden": bool(session.get("pending_hidden")),
         "id": sid,
         "last_active": float(session.get("last_active") or session.get("created_at") or now),
@@ -2692,6 +2695,22 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
 
 def _session_lookup_key(session: dict, *, fallback: str = "") -> str:
     return str(getattr(session.get("agent"), "session_id", None) or session.get("session_key") or fallback or "")
+
+
+def note_live_session_hidden(session_key: str, hidden: bool) -> None:
+    """Mirror a store-only ``hidden`` write onto a LIVE session in this process.
+
+    ``session.active_list`` reports ``hidden`` from the runtime dict, so a hide applied straight to
+    state.db (the dashboard's ``PATCH /api/sessions``, an API-server write) would otherwise leave the
+    session advertising itself as visible to clients that exclude hidden sessions — the Desktop
+    sidebar's live group must not list a session the product deliberately hides (the Bot Chat
+    "unconditionally hidden" class). Best-effort and in-process by construction: a foreign process's
+    ``_sessions`` is not this registry's, and it is not what this registry reports.
+    """
+    with _sessions_lock:
+        for session in _sessions.values():
+            if session.get("session_key") == session_key:
+                session["pending_hidden"] = hidden
 
 
 def _find_live_session_by_key(session_key: str, profile_home=_ANY_PROFILE) -> tuple[str, dict] | None:
