@@ -1,14 +1,7 @@
-/** Which direction the composer's history ring is being walked. */
-export type HistoryStep = 'backward' | 'forward'
-
-export interface HistoryStepArgs {
-  /** True while the composer is already stepping through sent-message history. */
-  browsing: boolean
-  /** Live composer text. */
-  draft: string
-  /** The ↑/↓ recall preference (Settings → Chat). */
-  enabled: boolean
-}
+/** A request to walk the composer's sent-message history ring. */
+export type HistoryStepRequest =
+  | { step: 'forward'; browsing: boolean; enabled: boolean }
+  | { step: 'backward'; browsing: boolean; draft: string; enabled: boolean }
 
 /**
  * Whether an arrow press may walk sent-message history.
@@ -18,14 +11,14 @@ export interface HistoryStepArgs {
  * hijacks a typed draft the user did not recall. Both are off when the user has
  * turned the arrows off in Settings.
  */
-export function historyStepAllowed(step: HistoryStep, args: HistoryStepArgs): boolean {
-  if (!args.enabled) {
+export function historyStepAllowed(request: HistoryStepRequest): boolean {
+  if (!request.enabled) {
     return false
   }
 
-  if (step === 'forward') {
-    return args.browsing
+  if (request.step === 'forward') {
+    return request.browsing
   }
 
-  return args.browsing || args.draft.trim().length === 0
+  return request.browsing || request.draft.trim().length === 0
 }
