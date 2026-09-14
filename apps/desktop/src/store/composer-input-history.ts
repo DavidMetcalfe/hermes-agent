@@ -35,6 +35,15 @@ export const $historyArrowsEnabled = atom<boolean>(storedBoolean(HISTORY_ARROWS_
 /** Turn ↑/↓ sent-message recall on or off (Settings → Chat). */
 export function setHistoryArrowsEnabled(enabled: boolean): void {
   persistBoolean(HISTORY_ARROWS_KEY, enabled)
+  applyHistoryArrowsEnabled(enabled)
+}
+
+/**
+ * Apply the value to this window. Never persists: the sibling-window path
+ * already has it in storage, and writing back would bounce the storage event
+ * between windows forever.
+ */
+function applyHistoryArrowsEnabled(enabled: boolean): void {
   $historyArrowsEnabled.set(enabled)
 
   // Recall can only OPEN from an empty composer, so the dropped draftSnapshot
@@ -48,11 +57,13 @@ export function setHistoryArrowsEnabled(enabled: boolean): void {
 
 // Cross-window sync (same pattern as store/translucency and the session draft
 // stash): the composer reads this atom imperatively, so without the storage
-// event a second window's arrows would keep recalling until a reload.
+// event a second window's arrows would keep recalling until a reload. The
+// listener goes through the same apply as the setter — never the setter itself,
+// which would persist and bounce the event back to the sibling window.
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', event => {
     if (event.key === HISTORY_ARROWS_KEY) {
-      $historyArrowsEnabled.set(storedBoolean(HISTORY_ARROWS_KEY, true))
+      applyHistoryArrowsEnabled(storedBoolean(HISTORY_ARROWS_KEY, true))
     }
   })
 }
