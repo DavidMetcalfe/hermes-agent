@@ -204,6 +204,25 @@ describe('arrow-history preference', () => {
     expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
   })
 
+  it('a sibling disable also drops the passive window browse state', async () => {
+    // Same fresh-module setup as the sibling case: the listener lives on this
+    // module instance, so the browse state must be seeded on it too — the
+    // top-level import's atom is a different instance after resetModules.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    reloaded.browseBackward(SESSION_A, 'draft', HISTORY)
+    expect(reloaded.isBrowsingHistory(SESSION_A)).toBe(true)
+
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
+    // use-composer-draft skips its stash reads while a cursor is live, so a
+    // passive window that kept browsing would stop stashing new drafts.
+    expect(reloaded.$perSessionBrowse.get()).toEqual({})
+  })
+
   it('reads a stored false back as off after a reload', async () => {
     window.localStorage.setItem(ARROWS_KEY, 'false')
     vi.resetModules()
