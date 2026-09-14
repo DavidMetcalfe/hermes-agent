@@ -61,34 +61,62 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
  *  id *and* compression lineage: local rows win, then each server hit whose
  *  lineage is not already present becomes the already-loaded row when we have
  *  one (`loadedById`, looked up by tip then lineage root), else a synthesized
- *  row. Output order is local-then-server. */
+ *  row. Lineage membership is tracked separately from `out`'s id keys — the two
+ *  are different key spaces — so a hit that resolves to a conversation already
+ *  listed under either identity is skipped, and rows keep the ids the list
+ *  renders as React keys. Output order is local-then-server. */
 export function mergeSessionSearchResults(
   localMatches: readonly SessionInfo[],
   serverMatches: readonly SessionSearchResult[],
   loadedById?: ReadonlyMap<string, SessionInfo>
 ): SessionInfo[] {
   const out = new Map<string, SessionInfo>()
+  // Conversations already listed, keyed by compression lineage: the store can
+  // hold the tip while the backend matched the lineage root (or the reverse),
+  // so a hit for a conversation we already have must not become a second row.
+  const seenLineages = new Set<string>()
 
   for (const session of localMatches) {
     out.set(session.id, session)
+
+    if (session._lineage_root_id) {
+      seenLineages.add(session._lineage_root_id)
+    }
   }
 
   for (const match of serverMatches) {
-    if (!match.session_id || out.has(match.session_id)) {
+    const root = match.lineage_root ?? null
+
+    if (!match.session_id || out.has(match.session_id) || (root && (out.has(root) || seenLineages.has(root)))) {
       continue
     }
 
-    // One row per conversation: the store may hold the tip while the backend
-    // matched the lineage root (or vice versa), so a hit for a conversation we
-    // already listed must not become a second row.
-    if (match.lineage_root && out.has(match.lineage_root)) {
+    const loaded = loadedById?.get(match.session_id) ?? (root ? loadedById?.get(root) : undefined)
+
+    if (!loaded) {
+      out.set(match.session_id, searchResultToSession(match))
+
+      if (root) {
+        seenLineages.add(root)
+      }
+
       continue
     }
 
-    const loaded =
-      loadedById?.get(match.session_id) ?? (match.lineage_root ? loadedById?.get(match.lineage_root) : undefined)
+    // A loaded row already listed under either of its identities is the same row.
+    if (out.has(loaded.id) || (loaded._lineage_root_id && seenLineages.has(loaded._lineage_root_id))) {
+      continue
+    }
 
-    out.set(match.session_id, loaded ?? searchResultToSession(match))
+    out.set(loaded.id, loaded)
+
+    if (loaded._lineage_root_id) {
+      seenLineages.add(loaded._lineage_root_id)
+    }
+
+    if (root) {
+      seenLineages.add(root)
+    }
   }
 
   return [...out.values()]

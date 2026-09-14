@@ -263,11 +263,48 @@ describe('mergeSessionSearchResults', () => {
 
     expect(merged).toHaveLength(1)
     expect(merged[0]).toBe(local)
+    // Rows render with key={session.id} — ids must stay unique.
+    expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
   })
 
-  it('uses a lineage-root-keyed loaded row for a tip-keyed server hit', () => {
+  it('does not list a local tip row twice when the server hits the same lineage under another tip id', () => {
+    // The reproduced blocker: the merge keyed `out` by session id but tested
+    // lineage membership against it, so the tip-vs-root identity gap let the
+    // loaded fallback row in a second time — the same conversation on screen
+    // twice under one React key.
+    const loaded = makeSession({ _lineage_root_id: 'root-1', id: 'tip-1', preview: 'loaded row' })
+
+    const loadedById = new Map([
+      [loaded.id, loaded],
+      [loaded._lineage_root_id!, loaded]
+    ])
+
+    const merged = mergeSessionSearchResults([loaded], [serverHit('tip-2', { lineage_root: 'root-1' })], loadedById)
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(loaded)
+    expect(merged.map(row => row.id)).toEqual(['tip-1'])
+    expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
+  })
+
+  it('collapses two server hits that share one unloaded compression lineage', () => {
+    // tip-A and tip-B are the same conversation (one lineage, two ids); with no
+    // loaded row the first hit synthesizes the row and the second must be
+    // skipped, not synthesized again under a different id.
+    const merged = mergeSessionSearchResults([], [
+      serverHit('tip-A', { lineage_root: 'root-1' }),
+      serverHit('tip-B', { lineage_root: 'root-1' })
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].id).toBe('tip-A')
+    expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
+  })
+
+  it('lists a lineage-root-keyed loaded row once, under its own id, for a tip-keyed server hit', () => {
     // The backend hit the live tip; loadedById indexes the richer loaded row
-    // under its durable lineage root → that row wins over synthesis.
+    // under its durable lineage root → that row wins over synthesis and is
+    // keyed by loaded.id so it matches the id the list renders.
     const loaded = makeSession({ _lineage_root_id: 'root-9', id: 'tip-9', preview: 'loaded row' })
 
     const loadedById = new Map([
@@ -283,5 +320,7 @@ describe('mergeSessionSearchResults', () => {
 
     expect(merged).toHaveLength(1)
     expect(merged[0]).toBe(loaded)
+    expect(merged[0].id).toBe('tip-9')
+    expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
   })
 })
