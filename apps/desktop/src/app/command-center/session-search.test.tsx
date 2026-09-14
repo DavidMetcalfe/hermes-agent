@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -154,5 +154,72 @@ describe('Command Center sessions server search (#51694)', () => {
 
     expect(await screen.findByText('Precious conversation', {}, { timeout: 3000 })).toBeTruthy()
     expect(mocks.searchSessions).not.toHaveBeenCalled()
+  })
+
+  it('renders the loaded local match immediately and before the server hit', async () => {
+    // The query matches the loaded session's own title, so the client-side
+    // pass can answer without the backend; the server returns a different
+    // conversation. Local-first means the loaded row paints while the request
+    // is in flight and stays above the server hit once it lands.
+    let resolveSearch: ((value: { results: SessionSearchResult[] }) => void) | undefined
+
+    mocks.searchSessions.mockImplementation(
+      () =>
+        new Promise<{ results: SessionSearchResult[] }>(resolve => {
+          resolveSearch = resolve
+        })
+    )
+    renderCommandCenter()
+
+    await typeSearch('Precious')
+
+    // Wait for the debounce to fire and the request to be in flight (the
+    // promise below is still unresolved); the loaded local match must already
+    // be on screen without waiting for the backend.
+    await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('Precious'), { timeout: 3000 })
+    expect(await screen.findByText('Precious conversation', {}, { timeout: 3000 })).toBeTruthy()
+
+    await act(async () => {
+      resolveSearch?.({
+        results: [serverHit({ session_id: 'server-only-2', snippet: 'a >>>Precious<<< relic', title: 'Relic notes' })]
+      })
+    })
+
+    expect(await screen.findByText('Relic notes', {}, { timeout: 3000 })).toBeTruthy()
+
+    const items = screen.getAllByRole('listitem').map(item => item.textContent ?? '')
+    const localIndex = items.findIndex(text => text.includes('Precious conversation'))
+    const serverIndex = items.findIndex(text => text.includes('Relic notes'))
+    expect(localIndex).toBeGreaterThanOrEqual(0)
+    expect(serverIndex).toBeGreaterThanOrEqual(0)
+    expect(localIndex).toBeLessThan(serverIndex)
+  })
+
+  it('shows the searching state while the request is unresolved, then the hit', async () => {
+    // A query nothing loaded can match: the list is empty, so the pending
+    // state is what fills the panel until the server answers.
+    let resolveSearch: ((value: { results: SessionSearchResult[] }) => void) | undefined
+
+    mocks.searchSessions.mockImplementation(
+      () =>
+        new Promise<{ results: SessionSearchResult[] }>(resolve => {
+          resolveSearch = resolve
+        })
+    )
+    renderCommandCenter()
+
+    await typeSearch('zzqnomatch')
+
+    await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('zzqnomatch'), { timeout: 3000 })
+    expect(await screen.findByText('Searching…', {}, { timeout: 3000 })).toBeTruthy()
+
+    await act(async () => {
+      resolveSearch?.({
+        results: [serverHit({ session_id: 'server-late-1', snippet: 'a >>>zzqnomatch<<< relic', title: 'Late arrival' })]
+      })
+    })
+
+    expect(await screen.findByText('Late arrival', {}, { timeout: 3000 })).toBeTruthy()
+    expect(screen.queryByText('Searching…')).toBeNull()
   })
 })

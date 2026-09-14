@@ -156,7 +156,7 @@ describe('searchResultToSession', () => {
     }
   })
 
-  it('nulls the preview when the stripped snippet is blank', () => {
+  it('nulls the preview when both the stripped snippet and the stored preview are blank', () => {
     const session = searchResultToSession({
       model: null,
       role: null,
@@ -167,6 +167,34 @@ describe('searchResultToSession', () => {
     })
 
     expect(session.preview).toBeNull()
+  })
+
+  it('falls back to the stored preview when the stripped snippet is blank', () => {
+    const session = searchResultToSession({
+      model: null,
+      preview: 'the stored preview line',
+      role: null,
+      session_id: 'x',
+      session_started: null,
+      snippet: '>>><<<',
+      source: null
+    })
+
+    expect(session.preview).toBe('the stored preview line')
+  })
+
+  it('prefers the stripped snippet over the stored preview', () => {
+    const session = searchResultToSession({
+      model: null,
+      preview: 'stale stored line',
+      role: null,
+      session_id: 'x',
+      session_started: null,
+      snippet: '>>>fresh<<< snippet',
+      source: null
+    })
+
+    expect(session.preview).toBe('fresh snippet')
   })
 })
 
@@ -225,5 +253,35 @@ describe('mergeSessionSearchResults', () => {
     const merged = mergeSessionSearchResults([], [serverHit(''), serverHit('server-3')])
 
     expect(merged.map(s => s.id)).toEqual(['server-3'])
+  })
+
+  it('skips a server hit whose lineage root is already listed as a local row', () => {
+    // The store lists the durable root (pin id) while the backend hit the live
+    // compression tip of that same conversation → one row, the local one.
+    const local = makeSession({ id: 'root-1' })
+    const merged = mergeSessionSearchResults([local], [serverHit('tip-new', { lineage_root: 'root-1' })])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(local)
+  })
+
+  it('uses a lineage-root-keyed loaded row for a tip-keyed server hit', () => {
+    // The backend hit the live tip; loadedById indexes the richer loaded row
+    // under its durable lineage root → that row wins over synthesis.
+    const loaded = makeSession({ _lineage_root_id: 'root-9', id: 'tip-9', preview: 'loaded row' })
+
+    const loadedById = new Map([
+      [loaded.id, loaded],
+      [loaded._lineage_root_id!, loaded]
+    ])
+
+    const merged = mergeSessionSearchResults(
+      [],
+      [serverHit('tip-new', { lineage_root: 'root-9', title: 'Server title' })],
+      loadedById
+    )
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toBe(loaded)
   })
 })
