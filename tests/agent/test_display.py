@@ -268,6 +268,74 @@ class TestCuteSkillManage:
         assert name not in line
         assert "..." in line
 
+    # ---- advertised call shape: {"operations": [...]} (SKILL_MANAGE_SCHEMA requires it) ----
+
+    def test_operations_array_success_names_the_skill(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "create", "name": "deploy-runbook", "content": "..."}]},
+            0.1,
+            result='{"success": true, "message": "Skill \'deploy-runbook\' created."}',
+        )
+        assert "created" in line
+        assert "deploy-runbook" in line
+
+    def test_multi_op_batch_names_first_skill_and_marks_the_rest(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [
+                {"action": "create", "name": "first-skill", "content": "..."},
+                {"action": "patch", "name": "second-skill"},
+            ]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "first-skill" in line
+        assert "+1" in line
+
+    def test_sole_delete_batch_reports_deleted(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "delete", "name": "gone"}]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "deleted" in line
+        assert "gone" in line
+        assert "updated" not in line
+
+    def test_failed_batch_names_intent_without_claiming_success(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "create", "name": "dupe"}]},
+            0.1,
+            result='{"success": false, "error": "A skill named dupe already exists"}',
+        )
+        assert "created" not in line
+        assert "skill skill" not in line
+        assert "already exists" in line  # failure suffix proves it went through the real path
+
+    def test_staged_write_reports_staged_not_created(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"action": "create", "name": "staged-one"},
+            0.1,
+            result='{"success": true, "staged": true, "pending_id": "p1", "message": "Queued for approval; not yet saved."}',
+        )
+        assert "staged" in line
+        assert "created" not in line
+        assert "staged-one" in line
+
+    def test_unknown_action_verb_passes_through(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"action": "move", "name": "renamed-skill"}]},
+            0.1,
+            result='{"success": true}',
+        )
+        assert "move" in line
+        assert "renamed-skill" in line
+
 
 class TestEditDiffPreview:
 

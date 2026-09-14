@@ -997,13 +997,22 @@ _SKILL_MANAGE_VERBS = {
 
 
 def _cute_skill_manage(a: dict, r) -> str:
-    """Completion line naming the skill a ``skill_manage`` call created or changed."""
-    action = str(a.get("action") or "").lower()
-    name = _cute_trunc(a.get("name") or a.get("skill") or "skill")
-    verb = _SKILL_MANAGE_VERBS.get(action, action or "updated")
-    if r is not None and not _result_succeeded(r):
-        verb = action or "skill"          # failed: report the intent, the failure suffix marks the outcome
-    return f"┊ 📚 skill     {verb} {name}"
+    """Completion line naming the skill a ``skill_manage`` call created or changed. The tool
+    advertises ONE call shape — an ``operations`` array — so the first op names the line; the
+    flat top-level form is only the legacy fallback for old transcripts and staged replay."""
+    ops = a.get("operations")
+    head = ops[0] if isinstance(ops, list) and ops and isinstance(ops[0], dict) else {}
+    action = str(a.get("action") or head.get("action") or "").lower()
+    name = _cute_trunc(str(a.get("name") or head.get("name") or "").strip() or "skill")
+    more = f" +{len(ops) - 1}" if isinstance(ops, list) and len(ops) > 1 else ""
+    data = safe_json_loads(r) if r else None
+    if isinstance(data, dict) and data.get("staged"):
+        verb = "staged"                 # write_approval staged it; nothing was saved yet
+    elif not _result_succeeded(r):
+        verb = action or "updated"      # failed/unknown: report the intent; the failure suffix marks the outcome
+    else:
+        verb = _SKILL_MANAGE_VERBS.get(action, action or "updated")
+    return f"┊ 📚 skill     {verb} {name}{more}"
 
 
 def _cute_cronjob(a: dict, _r) -> str:
