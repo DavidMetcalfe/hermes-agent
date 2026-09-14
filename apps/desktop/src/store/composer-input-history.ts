@@ -37,13 +37,24 @@ export function setHistoryArrowsEnabled(enabled: boolean): void {
   persistBoolean(HISTORY_ARROWS_KEY, enabled)
   $historyArrowsEnabled.set(enabled)
 
-  // Disabling mid-browse would otherwise strand the cursor: the composer would
-  // keep a recalled entry as its draft with no arrow gesture able to walk back
-  // to the draft it replaced, and the draft stash/restore path treats a live
-  // cursor as 'the user is browsing'. Drop the state instead.
+  // Recall can only OPEN from an empty composer, so the dropped draftSnapshot
+  // is blank by construction — nothing typed rides in it. The live cursor is
+  // the hazard: use-composer-draft treats it as 'browsing' and skips its draft
+  // persist/stash reads, so a new draft would stop being stashed while off.
   if (!enabled) {
     $perSessionBrowse.set({})
   }
+}
+
+// Cross-window sync (same pattern as store/translucency and the session draft
+// stash): the composer reads this atom imperatively, so without the storage
+// event a second window's arrows would keep recalling until a reload.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === HISTORY_ARROWS_KEY) {
+      $historyArrowsEnabled.set(storedBoolean(HISTORY_ARROWS_KEY, true))
+    }
+  })
 }
 
 function ensure(sessionId: string): SessionBrowseState {

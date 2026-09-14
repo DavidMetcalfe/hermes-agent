@@ -413,9 +413,8 @@ function ConfigSettingsInner({
           <QuickEntrySettings />
         </>
       )}
-      {/* Device-local composer behavior (not config.yaml): the arrow-recall
-          toggle sits with the attach cap, the Chat section's other
-          this-computer-only preference. */}
+      {/* Device-local preferences for the chat surface, not config.yaml: the
+          arrow-recall switch and the attach/preview cap. */}
       {activeSectionId === 'chat' ? (
         <>
           <ToggleRow

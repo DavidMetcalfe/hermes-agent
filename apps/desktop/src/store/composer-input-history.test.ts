@@ -146,28 +146,62 @@ describe('arrow-history preference', () => {
     window.localStorage.removeItem(ARROWS_KEY)
   })
 
-  it('defaults to on when nothing is stored', () => {
-    expect($historyArrowsEnabled.get()).toBe(true)
+  it('defaults to on when nothing is stored', async () => {
+    // Reload-based so the assertion reads the seed of a fresh module, not the
+    // atom captured whenever this file happened to be imported.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
   })
 
-  it('disabling persists the choice and drops in-flight browse state', () => {
+  it('disabling persists the choice and drops in-flight browse state', async () => {
     browseBackward(SESSION_A, 'draft', HISTORY)
 
     expect(isBrowsingHistory(SESSION_A)).toBe(true)
 
     setHistoryArrowsEnabled(false)
 
-    expect(window.localStorage.getItem(ARROWS_KEY)).toBe('false')
     expect($historyArrowsEnabled.get()).toBe(false)
     expect($perSessionBrowse.get()).toEqual({})
+
+    // Round-trip through a reload instead of pinning the stored string, so the
+    // test checks the choice survived without freezing persistBoolean's format.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
   })
 
-  it('re-enabling persists the choice', () => {
+  it('re-enabling persists the choice across a reload', async () => {
     setHistoryArrowsEnabled(false)
     setHistoryArrowsEnabled(true)
 
-    expect(window.localStorage.getItem(ARROWS_KEY)).toBe('true')
-    expect($historyArrowsEnabled.get()).toBe(true)
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+  })
+
+  it('follows a sibling window toggling the preference', async () => {
+    // Fresh module seeded while the key is absent → atom starts on, like a
+    // window that opened before the sibling's Settings toggle.
+    vi.resetModules()
+    const reloaded = await import('./composer-input-history')
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
+
+    // The sibling's write lands first; the storage event fires after it.
+    window.localStorage.setItem(ARROWS_KEY, 'false')
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(false)
+
+    // Removal falls back to the default (on).
+    window.localStorage.removeItem(ARROWS_KEY)
+    window.dispatchEvent(new StorageEvent('storage', { key: ARROWS_KEY }))
+
+    expect(reloaded.$historyArrowsEnabled.get()).toBe(true)
   })
 
   it('reads a stored false back as off after a reload', async () => {

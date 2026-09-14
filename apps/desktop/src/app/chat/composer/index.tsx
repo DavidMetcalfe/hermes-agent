@@ -850,8 +850,9 @@ export function ChatBar({
     }
 
     // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
-    // place) then sent-message history. The history ring is derived from live
-    // session messages each press — single source of truth, no mirror.
+    // place) then sent-message history — the history rung can be switched off in
+    // Settings → Chat. The history ring is derived from live session messages
+    // each press — single source of truth, no mirror.
     if (event.key === 'ArrowUp') {
       const currentDraft = draftRef.current
 
@@ -879,7 +880,8 @@ export function ChatBar({
       const browsing = isBrowsingHistory(sessionId)
 
       if (
-        !historyStepAllowed('backward', {
+        !historyStepAllowed({
+          step: 'backward',
           browsing,
           draft: currentDraft,
           enabled: $historyArrowsEnabled.get()
@@ -915,9 +917,9 @@ export function ChatBar({
 
       // Browsing sent history → step toward the present, restoring the draft.
       if (
-        historyStepAllowed('forward', {
+        historyStepAllowed({
+          step: 'forward',
           browsing: isBrowsingHistory(sessionId),
-          draft: draftRef.current,
           enabled: $historyArrowsEnabled.get()
         })
       ) {
