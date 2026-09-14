@@ -23413,6 +23413,7 @@
             "type": "boolean"
           },
           "hidden": {
+            "default": false,
             "title": "Hidden",
             "type": "boolean"
           },
@@ -23437,16 +23438,32 @@
             "type": "string"
           },
           "profile": {
-            "title": "Profile",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
           },
           "session_key": {
             "title": "Session Key",
             "type": "string"
           },
           "source": {
-            "title": "Source",
-            "type": "string"
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source"
           },
           "started_at": {
             "title": "Started At",
@@ -23462,15 +23479,12 @@
         },
         "required": [
           "current",
-          "hidden",
           "id",
           "last_active",
           "message_count",
           "model",
           "preview",
-          "profile",
           "session_key",
-          "source",
           "started_at",
           "status",
           "title"

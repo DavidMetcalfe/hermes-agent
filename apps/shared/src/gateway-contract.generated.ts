@@ -2559,15 +2559,15 @@ export interface SessionActiveListResult {
 /** ``server._session_live_item``. */
 export interface SessionActiveItem {
   current: boolean
-  hidden: boolean
+  hidden?: boolean
   id: string
   last_active: number
   message_count: number
   model: string
   preview: string
-  profile: string
+  profile?: string | null
   session_key: string
-  source: string
+  source?: string | null
   started_at: number
   status: LiveSessionStatus
   title: string
