@@ -49,7 +49,7 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
     message_count: 0,
     model: result.model ?? null,
     output_tokens: 0,
-    preview: stripFtsMarkers(result.snippet ?? '').trim() || null,
+    preview: stripFtsMarkers(result.snippet ?? '').trim() || result.preview || null,
     source: result.source ?? null,
     started_at: ts,
     title: result.title ?? null,
@@ -58,9 +58,10 @@ export function searchResultToSession(result: SessionSearchResult): SessionInfo 
 }
 
 /** Merge instant client-side matches with server FTS hits, deduped by session
- *  id: local rows win, then each server hit not already present becomes the
- *  already-loaded row when we have one (`loadedById`), else a synthesized row.
- *  Output order is local-then-server. */
+ *  id *and* compression lineage: local rows win, then each server hit whose
+ *  lineage is not already present becomes the already-loaded row when we have
+ *  one (`loadedById`, looked up by tip then lineage root), else a synthesized
+ *  row. Output order is local-then-server. */
 export function mergeSessionSearchResults(
   localMatches: readonly SessionInfo[],
   serverMatches: readonly SessionSearchResult[],
@@ -77,7 +78,17 @@ export function mergeSessionSearchResults(
       continue
     }
 
-    out.set(match.session_id, loadedById?.get(match.session_id) ?? searchResultToSession(match))
+    // One row per conversation: the store may hold the tip while the backend
+    // matched the lineage root (or vice versa), so a hit for a conversation we
+    // already listed must not become a second row.
+    if (match.lineage_root && out.has(match.lineage_root)) {
+      continue
+    }
+
+    const loaded =
+      loadedById?.get(match.session_id) ?? (match.lineage_root ? loadedById?.get(match.lineage_root) : undefined)
+
+    out.set(match.session_id, loaded ?? searchResultToSession(match))
   }
 
   return [...out.values()]

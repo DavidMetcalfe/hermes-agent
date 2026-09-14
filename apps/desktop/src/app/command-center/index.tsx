@@ -4,7 +4,6 @@ import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRe
 import { LogTail } from '@/components/chat/log-tail'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { SearchField } from '@/components/ui/search-field'
 import { SegmentedControl } from '@/components/ui/segmented-control'
@@ -188,6 +187,8 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     let cancelled = false
 
     setSearchPending(true)
+    // A new query invalidates the previous hits so they cannot masquerade as results for it.
+    setServerMatches([])
 
     void searchSessions(debouncedQuery)
       .then(res => {
@@ -195,7 +196,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
           setServerMatches(res.results)
         }
       })
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        console.error('[command-center] session search failed', error)
+      })
       .finally(() => {
         if (!cancelled) {
           setSearchPending(false)
@@ -207,7 +210,21 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
     }
   }, [debouncedQuery, section])
 
-  const loadedById = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
+  // Index both identities so a server hit for either side of a compression
+  // tip rotation finds the richer loaded row instead of a synthesized one.
+  const loadedById = useMemo(() => {
+    const map = new Map<string, SessionInfo>()
+
+    for (const session of sessions) {
+      map.set(session.id, session)
+
+      if (session._lineage_root_id) {
+        map.set(session._lineage_root_id, session)
+      }
+    }
+
+    return map
+  }, [sessions])
 
   const filteredSessions = useMemo(() => {
     const sorted = [...sessions].sort((a, b) => {
@@ -436,15 +453,9 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
                         >
                           <div className="flex min-w-0 items-center gap-1.5">
                             {session.archived && (
-                              <Tip label={t.desktop.archived}>
-                                <span
-                                  aria-label={t.desktop.archived}
-                                  className="shrink-0 text-(--ui-text-quaternary)"
-                                  role="img"
-                                >
-                                  <Codicon name="archive" size="0.75rem" />
-                                </span>
-                              </Tip>
+                              <span className="shrink-0 rounded-sm bg-(--ui-bg-quinary) px-1 py-px text-[0.6rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                                {t.desktop.archived}
+                              </span>
                             )}
                             <div className="truncate text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
                               {sessionTitle(session)}

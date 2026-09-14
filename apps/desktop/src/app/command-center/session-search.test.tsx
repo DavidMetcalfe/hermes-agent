@@ -108,7 +108,7 @@ describe('Command Center sessions server search (#51694)', () => {
     expect(await screen.findByText('Frozen tundra notes', {}, { timeout: 3000 })).toBeTruthy()
   })
 
-  it('marks an archived server hit with the archived indicator', async () => {
+  it('marks an archived server hit with the archived badge', async () => {
     mocks.searchSessions.mockResolvedValue({
       results: [
         serverHit({
@@ -124,8 +124,9 @@ describe('Command Center sessions server search (#51694)', () => {
     await typeSearch('zzqfrozen')
 
     await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('zzqfrozen'), { timeout: 3000 })
-    const indicator = await screen.findByLabelText('Archived', {}, { timeout: 3000 })
-    expect(indicator.getAttribute('role')).toBe('img')
+    // The archived marker is a visible text badge, not a tooltip on a glyph.
+    expect(await screen.findByText('Frozen archive thread', {}, { timeout: 3000 })).toBeTruthy()
+    expect(await screen.findByText('Archived', {}, { timeout: 3000 })).toBeTruthy()
   })
 
   it('strips the backend FTS highlight markers from rendered text', async () => {
