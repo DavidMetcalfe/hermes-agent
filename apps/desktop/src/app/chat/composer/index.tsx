@@ -20,7 +20,13 @@ import { useStoresSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { interceptsTypedVoiceStop } from '@/lib/voice-stop-word'
 import { sessionCompacting } from '@/store/compaction'
-import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } from '@/store/composer-input-history'
+import {
+  $historyArrowsEnabled,
+  browseBackward,
+  browseForward,
+  deriveUserHistory,
+  isBrowsingHistory
+} from '@/store/composer-input-history'
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
@@ -32,6 +38,7 @@ import { $threadScrolledUp } from '@/store/thread-scroll'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
+import { historyStepAllowed } from './arrow-history-nav'
 import { AttachmentList } from './attachments'
 import {
   acceptsTriggerCompletion,
@@ -866,8 +873,18 @@ export function ChatBar({
         return
       }
 
-      // Don't hijack a typed draft unless already browsing — they'd lose it.
-      if (currentDraft.trim() && !isBrowsingHistory(sessionId)) {
+      // Sent-message recall. Never a hijack of a draft the user typed (they'd
+      // lose it), and off entirely when the arrows are turned off in Settings
+      // → Chat — either way the caret keeps the key, so no preventDefault.
+      const browsing = isBrowsingHistory(sessionId)
+
+      if (
+        !historyStepAllowed('backward', {
+          browsing,
+          draft: currentDraft,
+          enabled: $historyArrowsEnabled.get()
+        })
+      ) {
         return
       }
 
@@ -897,7 +914,13 @@ export function ChatBar({
       }
 
       // Browsing sent history → step toward the present, restoring the draft.
-      if (isBrowsingHistory(sessionId)) {
+      if (
+        historyStepAllowed('forward', {
+          browsing: isBrowsingHistory(sessionId),
+          draft: draftRef.current,
+          enabled: $historyArrowsEnabled.get()
+        })
+      ) {
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
