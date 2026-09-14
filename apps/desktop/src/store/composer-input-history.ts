@@ -1,5 +1,7 @@
 import { atom } from 'nanostores'
 
+import { persistBoolean, storedBoolean } from '@/lib/storage'
+
 /**
  * Per-session input history browse state.
  *
@@ -13,6 +15,9 @@ import { atom } from 'nanostores'
  *     `-1` means "not browsing".
  *   - `draftSnapshot` — the composer text at the moment the user started
  *     browsing, so ArrowDown back to the "present" restores it.
+ *
+ * The file also owns the device-local ↑/↓ recall preference
+ * (`$historyArrowsEnabled`) that turns the whole feature off (issue #51515).
  */
 export interface SessionBrowseState {
   cursor: number
@@ -20,6 +25,26 @@ export interface SessionBrowseState {
 }
 
 const $perSessionBrowse = atom<Record<string, SessionBrowseState>>({})
+
+const HISTORY_ARROWS_KEY = 'hermes.desktop.composerHistory.arrowsEnabled'
+
+// Device-local preference, shared by every composer in the window. Default ON:
+// an unset key keeps today's behavior.
+export const $historyArrowsEnabled = atom<boolean>(storedBoolean(HISTORY_ARROWS_KEY, true))
+
+/** Turn ↑/↓ sent-message recall on or off (Settings → Chat). */
+export function setHistoryArrowsEnabled(enabled: boolean): void {
+  persistBoolean(HISTORY_ARROWS_KEY, enabled)
+  $historyArrowsEnabled.set(enabled)
+
+  // Disabling mid-browse would otherwise strand the cursor: the composer would
+  // keep a recalled entry as its draft with no arrow gesture able to walk back
+  // to the draft it replaced, and the draft stash/restore path treats a live
+  // cursor as 'the user is browsing'. Drop the state instead.
+  if (!enabled) {
+    $perSessionBrowse.set({})
+  }
+}
 
 function ensure(sessionId: string): SessionBrowseState {
   const all = { ...$perSessionBrowse.get() }
