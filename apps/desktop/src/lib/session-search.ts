@@ -87,7 +87,15 @@ export function mergeSessionSearchResults(
   for (const match of serverMatches) {
     const root = match.lineage_root ?? null
 
-    if (!match.session_id || out.has(match.session_id) || (root && (out.has(root) || seenLineages.has(root)))) {
+    // A hit can also arrive keyed by a lineage root we already represent — the
+    // tip/root pair can come tip-first or root-first — so test the hit's own id
+    // against the seen lineages, not just its root.
+    if (
+      !match.session_id ||
+      out.has(match.session_id) ||
+      seenLineages.has(match.session_id) ||
+      (root && (out.has(root) || seenLineages.has(root)))
+    ) {
       continue
     }
 

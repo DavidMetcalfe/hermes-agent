@@ -323,4 +323,35 @@ describe('mergeSessionSearchResults', () => {
     expect(merged[0].id).toBe('tip-9')
     expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
   })
+
+  it('skips a root-keyed server hit following an unloaded tip hit of the same lineage', () => {
+    // Tip-then-root order: the tip hit synthesizes the row and records the
+    // lineage; the later hit keyed by that root is the same conversation and
+    // must not become a second row. First hit wins, so the row keeps tip-2.
+    const merged = mergeSessionSearchResults([], [
+      serverHit('tip-2', { lineage_root: 'root-1' }),
+      serverHit('root-1', { lineage_root: null })
+    ])
+
+    expect(merged).toHaveLength(1)
+    expect(merged[0].id).toBe('tip-2')
+    expect(new Set(merged.map(row => row.id)).size).toBe(merged.length)
+  })
+
+  // Contract, not a bug: two LOCAL rows sharing a lineage root are both kept.
+  // The backend's listable filter excludes compression children, so
+  // list_sessions_rich(project_compression_tips=True) emits one row per
+  // lineage; and the store keys identity by (profile, id)/(profile, lineage)
+  // because another profile is a DIFFERENT session that must survive dedupe
+  // (#92454) — collapsing local rows on a bare root would reintroduce that.
+  it('keeps two local rows that share a lineage root across different profiles', () => {
+    const tipA = makeSession({ _lineage_root_id: 'root-1', id: 'tip-a', profile: 'alpha' })
+    const tipB = makeSession({ _lineage_root_id: 'root-1', id: 'tip-b', profile: 'beta' })
+
+    const merged = mergeSessionSearchResults([tipA, tipB], [])
+
+    expect(merged).toHaveLength(2)
+    expect(merged[0]).toBe(tipA)
+    expect(merged[1]).toBe(tipB)
+  })
 })
