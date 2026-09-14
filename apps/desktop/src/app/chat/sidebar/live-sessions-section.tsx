@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -7,7 +7,8 @@ import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { $liveSessions } from '@/store/live-sessions'
+import { $visibleLiveSessions } from '@/store/live-sessions'
+import { $profileScope } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
@@ -15,6 +16,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
+import { filterSessionsByProfileScope } from './profile-scope'
 
 // The rows refresh their relative ages on this cadence. The `session.active_list`
 // poll re-runs every 1.5s but preserves the atom reference when nothing changed,
@@ -48,10 +50,18 @@ interface SidebarLiveSessionsSectionProps {
 export function SidebarLiveSessionsSection({ label, onResumeSession }: SidebarLiveSessionsSectionProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
-  const liveSessions = useStore($liveSessions)
+  const liveSessions = useStore($visibleLiveSessions)
+  const profileScope = useStore($profileScope)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const visible = usePaneVisible()
   const [nowMs, setNowMs] = useState(() => Date.now())
+
+  // The same scope rule the stored slices obey (index.tsx filters recents, cron
+  // and messaging through `filterSessionsByProfileScope`): a session live on
+  // this backend under a DIFFERENT profile must not surface while the sidebar
+  // is scoped to one profile. `ALL_PROFILES` passes the array through
+  // untouched, so the identity-stable common case stays memo-friendly.
+  const rows = useMemo(() => filterSessionsByProfileScope(liveSessions, profileScope), [liveSessions, profileScope])
 
   // Rows are pure; one clock for the section, ticking only while the pane is
   // on screen — same shape as the cron section's countdown clock.
@@ -65,7 +75,7 @@ export function SidebarLiveSessionsSection({ label, onResumeSession }: SidebarLi
     return () => window.clearInterval(id)
   }, [visible])
 
-  if (liveSessions.length === 0) {
+  if (rows.length === 0) {
     return null
   }
 
@@ -75,7 +85,7 @@ export function SidebarLiveSessionsSection({ label, onResumeSession }: SidebarLi
         <SidebarPanelLabel>{label}</SidebarPanelLabel>
       </div>
       <SidebarGroupContent className="scrollbar-fade flex max-h-56 flex-col gap-px overflow-x-hidden overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
-        {liveSessions.map(session => (
+        {rows.map(session => (
           <LiveSessionSidebarRow
             isSelected={session.id === selectedStoredSessionId}
             key={session.id}

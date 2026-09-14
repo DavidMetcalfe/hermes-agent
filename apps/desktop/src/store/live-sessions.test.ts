@@ -7,7 +7,7 @@ import type { SessionInfo } from '@/types/hermes'
 
 import { makeSessionInfo } from '../test/session-info'
 
-import { $liveSessions, clearLiveSessions, reconcileLiveSessions } from './live-sessions'
+import { $liveSessions, $visibleLiveSessions, clearLiveSessions, reconcileLiveSessions } from './live-sessions'
 
 /**
  * `session.active_list` is the only thing that can show a session created over
@@ -107,7 +107,6 @@ describe('reconcileLiveSessions — dedupe against everything already represente
     ['a cron-slice row', () => $cronSessions.set([makeSessionInfo({ id: 'sess-live-a' })])],
     ['a messaging-slice row', () => $messagingSessions.set([makeSessionInfo({ id: 'sess-live-a' })])],
     ['an unlisted-draft owner stub', () => $unlistedSessionOwnerRows.set([makeSessionInfo({ id: 'sess-live-a' })])],
-    ['an open session tile', () => $sessionTiles.set([{ storedSessionId: 'sess-live-a' }])],
     ['a delete/archive tombstone', () => $removedSessionIds.set(new Set(['sess-live-a']))]
   ]
 
@@ -137,6 +136,16 @@ describe('reconcileLiveSessions — dedupe against everything already represente
     )
 
     expect(rows.map(r => r.id)).toEqual(['ok'])
+  })
+
+  it('keeps the row of a session that is open as a TILE — a tile is not a stored row', () => {
+    // Clicking a live row opens `in-place`, which loads main (never a tile), so
+    // a tile can only come from an explicit "open in tab". The session still has
+    // no stored row in that state, so hiding it here would make the group look
+    // like it ate the session; stored rows whose tile is open stay listed too.
+    $sessionTiles.set([{ storedSessionId: 'sess-live-a' }])
+
+    expect(reconcileLiveSessions({ sessions: [liveItem()] }, OPTS).map(r => r.id)).toEqual(['sess-live-a'])
   })
 
   it('keeps a live session that a list refresh has not returned YET, and drops it once the row lands', () => {
@@ -247,5 +256,26 @@ describe('reconcileLiveSessions — identity and ordering', () => {
     reconcileLiveSessions({ sessions: [liveItem()] }, OPTS)
     clearLiveSessions()
     expect($liveSessions.get()).toEqual([])
+  })
+})
+
+describe('$visibleLiveSessions — promotion is read-time, not poll-time', () => {
+  it('drops a live row the instant its stored row lands, before the next poll', () => {
+    reconcileLiveSessions({ sessions: [liveItem()] }, OPTS)
+    expect($visibleLiveSessions.get().map(r => r.id)).toEqual(['sess-live-a'])
+
+    // The first prompt persisted the row and the recents page came back with it
+    // while the live snapshot is still the previous poll's — the stored refresh
+    // is trailing-throttled (SESSIONS_LIST_TICK_GAP_MS) and a typing burst
+    // defers it further, so write-time dedupe alone would render both.
+    setSessions([makeSessionInfo({ id: 'sess-live-a', message_count: 1 })])
+
+    expect($visibleLiveSessions.get()).toEqual([])
+  })
+
+  it('keeps the array identity when nothing is filtered', () => {
+    reconcileLiveSessions({ sessions: [liveItem()] }, OPTS)
+
+    expect($visibleLiveSessions.get()).toBe($liveSessions.get())
   })
 })

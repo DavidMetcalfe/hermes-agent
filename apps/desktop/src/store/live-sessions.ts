@@ -1,10 +1,9 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { normalizeSessionSource, SIDEBAR_EXCLUDED_SOURCES } from '@/lib/session-source'
 import { normalizeProfileKey } from '@/store/profile'
 import { $cronSessions, $messagingSessions, $sessions, $unlistedSessionOwnerRows, sessionMatchesStoredId } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $sessionTiles } from '@/store/session-states'
 import type { SessionInfo } from '@/types/hermes'
 
 /**
@@ -100,16 +99,20 @@ function snapshotsEqual(a: readonly SessionInfo[], b: readonly SessionInfo[]): b
 /** True when this live session is already represented by a row the sidebar
  *  (or the owner ladder) knows: a stored slice row matched by STORED id —
  *  `sessionMatchesStoredId` also counts lineage roots and compression tips,
- *  so a rotated id never double-lists — an open tile, an unlisted-draft owner
- *  stub, or a delete/archive tombstone still awaiting backend confirmation. */
+ *  so a rotated id never double-lists — an unlisted-draft owner stub, or a
+ *  delete/archive tombstone still awaiting backend confirmation.
+ *
+ *  An open session TILE is deliberately NOT a representation here: a row click
+ *  opens `in-place`, which loads into main (`app/open-session.ts`), never a
+ *  tile, and this renderer's own draft tiles are covered by their owner stubs
+ *  (or the optimistic row) anyway. Counting tiles would drop the row of the
+ *  session the user just clicked while it still has no stored row — the group
+ *  would look like it ate the session. A stored row whose tile is open stays
+ *  listed for the same reason (`sessionsToKeep`). */
 function isAlreadyRepresented(sessionKey: string): boolean {
   const tombstones = $removedSessionIds.get()
 
   if (tombstones.has(sessionKey)) {
-    return true
-  }
-
-  if ($sessionTiles.get().some(tile => tile.storedSessionId === sessionKey)) {
     return true
   }
 
@@ -122,6 +125,29 @@ function isAlreadyRepresented(sessionKey: string): boolean {
 
   return lists.some(list => list.some(row => sessionMatchesStoredId(row, sessionKey)))
 }
+
+/**
+ * What the sidebar renders: `$liveSessions` minus anything the STORED slices
+ * represent right now.
+ *
+ * The reconciler above already applies this at write time, but it only runs on
+ * the 1.5s `session.active_list` poll — while the stored list refresh is
+ * trailing-throttled (`SESSIONS_LIST_TICK_GAP_MS`, 10s) and deferred further
+ * during a typing burst. In that window the first prompt has persisted the row
+ * and Recents is already showing it, so filtering only at write time would
+ * render the same session twice. Reading through a computed closes the window
+ * to a single React pass.
+ */
+export const $visibleLiveSessions = computed(
+  [$liveSessions, $sessions, $cronSessions, $messagingSessions, $unlistedSessionOwnerRows, $removedSessionIds],
+  rows => {
+    const visible = rows.filter(row => !isAlreadyRepresented(row.id))
+
+    // Keep the array identity when nothing was filtered: React and the
+    // per-list memo caches key on it.
+    return visible.length === rows.length ? rows : visible
+  }
+)
 
 /**
  * Turn a `session.active_list` snapshot into the live-group rows.

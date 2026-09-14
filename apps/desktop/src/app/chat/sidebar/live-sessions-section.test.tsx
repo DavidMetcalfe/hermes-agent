@@ -1,7 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $liveSessions, clearLiveSessions, reconcileLiveSessions } from '@/store/live-sessions'
+import { $activeGatewayProfile, $showAllProfiles } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
 
@@ -46,6 +47,10 @@ beforeEach(() => {
   $liveSessions.set([])
   $selectedStoredSessionId.set(null)
   $removedSessionIds.set(new Set())
+  // The sidebar's profile context (`$profileScope` = ALL_PROFILES when "All
+  // profiles" is on, else the active gateway's profile).
+  $showAllProfiles.set(false)
+  $activeGatewayProfile.set('default')
 })
 
 describe('SidebarLiveSessionsSection', () => {
@@ -105,5 +110,31 @@ describe('SidebarLiveSessionsSection', () => {
     // full row so the owner route (connection+profile stamped by reconcile)
     // resolves without a list lookup — never a no-op menu pretending to act.
     expect(onResumeSession).toHaveBeenCalledWith('sess-live-a', rows[0])
+  })
+
+  it('hides a live session owned by another profile while the sidebar is scoped to one', () => {
+    seedLive({ profile: 'work' })
+
+    render(<SidebarLiveSessionsSection label="Live now" onResumeSession={vi.fn()} />)
+
+    expect(screen.queryByText('Live chat')).toBeNull()
+  })
+
+  it('shows that session once the scope moves to its profile', () => {
+    seedLive({ profile: 'work' })
+    act(() => $activeGatewayProfile.set('work'))
+
+    render(<SidebarLiveSessionsSection label="Live now" onResumeSession={vi.fn()} />)
+
+    expect(screen.getByText('Live chat')).toBeTruthy()
+  })
+
+  it('shows every profile again in the all-profiles view', () => {
+    seedLive({ profile: 'work' })
+    act(() => $showAllProfiles.set(true))
+
+    render(<SidebarLiveSessionsSection label="Live now" onResumeSession={vi.fn()} />)
+
+    expect(screen.getByText('Live chat')).toBeTruthy()
   })
 })
