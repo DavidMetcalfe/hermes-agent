@@ -20,6 +20,7 @@ Gating invariants (from cross-vendor review):
 import time
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from agent import chat_completion_helpers as h
@@ -111,6 +112,34 @@ def test_stream_5xx_probe_success_delivers_response_without_latch(monkeypatch):
     # One-turn recovery: adoption's internal latch is RESTORED, not kept.
     assert call.agent._disable_streaming is False
     assert call.buffered and "non-streaming retry succeeded" in call.buffered[0]
+
+
+def test_broken_pipe_probes_before_repeating_billable_stream_and_preserves_tool_call(monkeypatch):
+    call = _make_call({"model": "m", "messages": [], "tools": [{"type": "function"}]})
+    _prime_probe_window(call)
+    tool_call = SimpleNamespace(
+        id="call_1", type="function",
+        function=SimpleNamespace(name="terminal", arguments='{"command":"true"}'),
+    )
+    recovered = SimpleNamespace(choices=[SimpleNamespace(
+        message=SimpleNamespace(content=None, reasoning_content=None, tool_calls=[tool_call]),
+        finish_reason="tool_calls",
+    )])
+    probes = []
+
+    def fake_probe(agent, kwargs):
+        probes.append(kwargs)
+        return recovered
+
+    monkeypatch.setattr(h, "interruptible_api_call", fake_probe)
+    monkeypatch.setattr(call, "_adopt_final_response", lambda response: response)
+
+    retry = call._handle_stream_error(
+        httpx.ReadError("[Errno 32] Broken pipe"), attempt=0, max_retries=2)
+
+    assert retry is False
+    assert probes == [call.api_kwargs]
+    assert call.result["response"].choices[0].message.tool_calls[0].function.name == "terminal"
 
 
 def test_stream_5xx_unmasked_by_probe_4xx(monkeypatch):

@@ -3102,7 +3102,9 @@ class _StreamingCall(StreamingWaitMonitor):
             logger.debug("Streaming worker caught %s after request cancellation — exiting without retry.", type(e).__name__)
             return False
         _is_timeout = isinstance(e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout))
-        _is_conn_err = isinstance(e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError))
+        _is_conn_err = isinstance(e, (
+            _httpx.ConnectError, _httpx.ReadError, _httpx.RemoteProtocolError, ConnectionError,
+        ))
         _is_stream_parse_err = self.agent._is_provider_stream_parse_error(e)
         _is_empty_stream = isinstance(e, EmptyStreamError)
         _is_sse_conn_err = not _is_timeout and not _is_conn_err and _is_sse_connection_error(e)
@@ -3129,6 +3131,12 @@ class _StreamingCall(StreamingWaitMonitor):
             return True
 
         if _is_transient or _is_empty_stream:
+            # A pre-delta transport failure is ambiguous: the provider may have
+            # completed and billed inference before its SSE writer broke.  Do not
+            # send the same billable stream three times before trying the wire
+            # format that also recovers broken streamed tool calls.
+            if self._recover_pre_delta_with_nonstreaming(e, transport_failure=True):
+                return False
             # Transient network / timeout error: retry with a fresh connection first.
             if attempt < max_retries:
                 self._retry_after_drop(e, attempt, max_retries, mid_tool_call=False, reason="stream_retry_cleanup")
@@ -3145,14 +3153,16 @@ class _StreamingCall(StreamingWaitMonitor):
         else:
             self._maybe_disable_streaming(e)
             logger.exception("Streaming failed before delivery: %s", e)
-            if self._unmask_server_error_with_nonstreaming(e):
+            if self._recover_pre_delta_with_nonstreaming(e):
                 return False
         # Propagate to the main retry loop (credential rotation, fallback, backoff).
         self.result["error"] = e
         return False
 
-    def _unmask_server_error_with_nonstreaming(self, e: Exception) -> bool:
-        """One non-streaming re-issue when a 5xx killed the stream before any delta.
+    def _recover_pre_delta_with_nonstreaming(
+        self, e: Exception, *, transport_failure: bool = False,
+    ) -> bool:
+        """One non-streaming re-issue when a 5xx or transport failure killed the stream before any delta.
 
         Some gateways validate the request only on their non-streaming path and crash
         opaquely ("500 something went wrong") when streaming — the real 4xx, with its
@@ -3169,7 +3179,9 @@ class _StreamingCall(StreamingWaitMonitor):
         not overwrite result); False = propagate ``e``.
         """
         status = getattr(e, "status_code", None) or getattr(getattr(e, "response", None), "status_code", None)
-        if not isinstance(status, int) or status < 500 or self.deltas_were_sent["yes"]:
+        if not transport_failure and (not isinstance(status, int) or status < 500):
+            return False
+        if self.deltas_were_sent["yes"]:
             return False
         if getattr(self.agent, "api_mode", "") not in ("", "chat_completions"):
             return False  # adoption replays chat-completions shapes only
@@ -3193,11 +3205,11 @@ class _StreamingCall(StreamingWaitMonitor):
                 return True
             logger.info("Non-streaming unmask probe failed: %s", probe_err)
             return False
-        logger.info("Streaming 5xx re-issued non-streaming successfully for %s/%s "
-                    "(not latched: the 5xx may be transient).",
+        logger.info("Pre-delta streaming failure re-issued non-streaming successfully for %s/%s "
+                    "(not latched: the failure may be transient).",
                     self.agent.provider or "unknown", self.agent.model or "unknown")
         self._quiet(self.agent._buffer_status,
-                    "⚠  Streaming failed with a provider server error; the non-streaming retry succeeded.")
+                    "⚠  Streaming failed before delivery; the non-streaming retry succeeded.")
         stream_pref = getattr(self.agent, "_disable_streaming", False)
         try:
             # The failed attempt already emitted its terminal on_stream_end(finished=False),
