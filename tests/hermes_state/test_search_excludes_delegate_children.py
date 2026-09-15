@@ -105,3 +105,40 @@ def test_visibility_surfaces_agree_on_marker_child(db: SessionDB):
         assert in_listing(session_id), session_id
         assert in_trigram_boundary(session_id), session_id
         assert in_scoped_search(session_id, token), session_id
+
+
+# ── The CJK LIKE-fallback route ───────────────────────────────────────────
+#
+# ``_search_filter_clauses()`` is shared by every search route, but the FTS
+# arms above only prove the word-MATCH route. A 2-char CJK query is below the
+# trigram index's >=3-char-per-token gate (and the cjk-bigram index needs an
+# optional tokenizer extension), so it answers via a canonical LIKE scan built
+# by the same clause helper — the route
+# ``test_fts_trigram_subagent_exclusion.py`` drives with ``source_filter``.
+# The marker boundary must hold there too.
+
+CJK_QUERY = "运行"  # shared by both contents; short enough to miss the trigram gate
+CJK_CHILD_EXTRA = "网关子任务"
+CJK_CONTROL_EXTRA = "普通会话"
+
+
+def _seed_cjk(db: SessionDB) -> None:
+    db.create_session("plain", source="telegram")
+    # Gateway-sourced delegate child: only the marker identifies it.
+    db.create_session(
+        "gw-kid", source="telegram", parent_session_id="plain",
+        model_config={"_delegate_from": "plain"},
+    )
+    db.append_message("gw-kid", role="assistant", content=f"{CJK_CHILD_EXTRA}{CJK_QUERY}正常")
+    db.append_message("plain", role="assistant", content=f"{CJK_CONTROL_EXTRA}{CJK_QUERY}正常")
+
+
+def test_cjk_like_fallback_honours_marker_boundary(db: SessionDB):
+    """The CJK fallback route shares the boundary: scoped CJK search hides the
+    marker child and keeps the control; bare CJK search still reaches the child."""
+    _seed_cjk(db)
+    # v30 parity first: the same CJK query with no exclude list reaches BOTH —
+    # so the scoped zero below can only come from the filter, not tokenisation.
+    assert _hits(db, CJK_QUERY) == ["gw-kid", "plain"]
+    # Behaviour contract, not a snapshot: exactly the control survives scoping.
+    assert _hits(db, CJK_QUERY, exclude_sources=SESSION_SEARCH_EXCLUDES) == ["plain"]
