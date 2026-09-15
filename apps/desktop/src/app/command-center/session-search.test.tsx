@@ -195,6 +195,40 @@ describe('Command Center sessions server search (#51694)', () => {
     expect(localIndex).toBeLessThan(serverIndex)
   })
 
+  it('keeps the loaded match when the server search fails', async () => {
+    // The endpoint is a second opinion, not the only one: a failed request must
+    // leave the instant client-side match on screen (parity with the sidebar,
+    // which also degrades to what it already has).
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mocks.searchSessions.mockRejectedValue(new Error('search endpoint unavailable'))
+    renderCommandCenter()
+
+    await typeSearch('Precious')
+
+    await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('Precious'), { timeout: 3000 })
+    expect(await screen.findByText('Precious conversation', {}, { timeout: 3000 })).toBeTruthy()
+
+    consoleError.mockRestore()
+  })
+
+  it('leaves the panel on the no-results copy, not the pending one, when the server search fails', async () => {
+    // A rejected request must settle: the pending copy is a claim that an answer
+    // is still coming, so leaving it up strands the panel on a spinner forever.
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    mocks.searchSessions.mockRejectedValue(new Error('search endpoint unavailable'))
+    renderCommandCenter()
+
+    await typeSearch('zzqfailure')
+
+    await waitFor(() => expect(mocks.searchSessions).toHaveBeenCalledWith('zzqfailure'), { timeout: 3000 })
+    expect(await screen.findByText('No matching results found.', {}, { timeout: 3000 })).toBeTruthy()
+    expect(screen.queryByText('Searching…')).toBeNull()
+
+    consoleError.mockRestore()
+  })
+
   it('shows the searching state while the request is unresolved, then the hit', async () => {
     // A query nothing loaded can match: the list is empty, so the pending
     // state is what fills the panel until the server answers.
