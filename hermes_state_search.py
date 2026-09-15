@@ -16,7 +16,8 @@ from hermes_state_common import (
     FTS_CJK_STALE_KEY, FTS_SQL, FTS_STALE_KEY, FTS_STORAGE_VERSION, FTS_TOOL_CONTENT_PREFIX_CHARS,
     FTS_TOOL_FULL_CONTENT_HIGH_WATER_KEY, FTS_TRIGRAM_EXCLUDED_SOURCES, FTS_TRIGRAM_SQL,
     MAX_FTS5_QUERY_CHARS, SCHEMA_VERSION, _FTS_CJK_TRIGGERS,
-    escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql, routed_sessions_setting,
+    _sql_json_extract, escape_like as _escape_like, fts_rebuild_admission, fts_trigram_session_sql,
+    routed_sessions_setting,
 )
 
 # Pre-split logger identity so log filtering/capture is unchanged.
@@ -151,6 +152,15 @@ def _search_filter_clauses(
     if exclude_sources is not None:
         where.append(f"s.source NOT IN ({','.join('?' for _ in exclude_sources)})")
         params.extend(exclude_sources)
+        # A delegate child spawned under a gateway turn carries the gateway's source,
+        # so excluding 'subagent' by column alone leaks it (#51855). The
+        # ``_delegate_from`` marker completes that boundary — and only that one; the
+        # v30 decision keeps children word-searchable for callers that pass no
+        # exclude list (see test_fts_trigram_subagent_exclusion.py).
+        if "subagent" in exclude_sources:
+            where.append(
+                f"COALESCE({_sql_json_extract('s.model_config', '$._delegate_from')}, '') = ''"
+            )
     if role_filter:
         where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
         params.extend(role_filter)
