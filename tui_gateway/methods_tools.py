@@ -600,12 +600,17 @@ def _cmd_queue(rid, params, session, name, arg):
 
 
 def _learn_ack(arg: str, _message: str) -> str:
-    """Gateway/CLI ack wording (gateway/run_inbound.py:813); client renders a plain system line."""
-    return f"Learning a skill from {'what you described' if arg.strip() else 'this conversation'}…"
+    """Gateway/CLI ack wording (gateway/run_inbound.py:813); client renders a plain system line.
+
+    ``arg`` arrives already stripped from ``cmd``, so emptiness is the whole test.
+    """
+    return f"Learning a skill from {'what you described' if arg else 'this conversation'}…"
 
 
 def _plan_ack(arg: str, _message: str) -> str:
-    task = arg.strip()
+    # Collapse whitespace before slicing: clients render the notice as one system
+    # line, and the 80-char cut must land on the text the user actually sees.
+    task = " ".join(arg.split())
     return f"Planning: {task[:80]}{'…' if len(task) > 80 else ''}" if task else "Planning from this conversation's context…"
 
 

@@ -109,6 +109,35 @@ def test_plan_notice_truncates_long_task(server):
     assert result["notice"] == f"Planning: {'x' * 80}…"
 
 
+def test_plan_notice_collapses_a_multiline_task(server):
+    # The clients render ``notice`` as ONE system line, so a newline in the task
+    # must not reach it (nor should runs of spaces/tabs).
+    result = _dispatch(server, "plan", "fix the\nparser")
+    assert result["notice"] == "Planning: fix the parser"
+    assert "\n" not in result["notice"]
+
+
+def test_plan_truncation_applies_to_the_collapsed_task(server):
+    # 98 chars with double-space separators, 74 collapsed: over 80 raw, under 80
+    # collapsed — the ellipsis decision and the slice both use the collapsed form.
+    raw = "  ".join(["xy"] * 25)
+    collapsed = " ".join(raw.split())
+    assert len(raw) > 80 >= len(collapsed)
+    result = _dispatch(server, "plan", raw)
+    assert result["notice"] == f"Planning: {collapsed}"
+    assert "…" not in result["notice"]
+
+
+def test_plan_truncates_the_collapsed_form_when_still_too_long(server):
+    # Collapsed length still > 80, so the ellipsis stays, and the cut lands on
+    # the collapsed string — not on whitespace-padded raw text.
+    raw = "  ".join(["abcdefghij"] * 9)
+    collapsed = " ".join(raw.split())
+    assert len(collapsed) > 80
+    result = _dispatch(server, "plan", raw)
+    assert result["notice"] == f"Planning: {collapsed[:80]}…"
+
+
 # null / whitespace-only arg --------------------------------------------------
 # ``CommandDispatchParams.arg`` is ``str | None`` (contracts/tools_commands.py) and
 # ``validate_params`` defers type/required checks to handlers (contracts/registry.py), so an
