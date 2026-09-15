@@ -23,7 +23,13 @@ export async function loadArchivedSessions(): Promise<void> {
 
     $archivedSessions.set(result.sessions)
   } catch {
-    $archivedSessions.set([])
+    // A failed refresh keeps what we already have (merge, don't clobber): the
+    // reload now also rides sessions.changed ticks (#111397), so a transient
+    // backend error must not blank an open Archived view. Only the very first
+    // load, with nothing loaded yet, leaves the set empty.
+    if ($archivedSessions.get().length === 0) {
+      $archivedSessions.set([])
+    }
   } finally {
     $archivedSessionsLoading.set(false)
   }
