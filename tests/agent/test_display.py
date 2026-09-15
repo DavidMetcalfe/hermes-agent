@@ -336,6 +336,17 @@ class TestCuteSkillManage:
         assert "move" in line
         assert "renamed-skill" in line
 
+    def test_failed_op_without_action_falls_back_to_updated_not_skill_skill(self):
+        line = get_cute_tool_message(
+            "skill_manage",
+            {"operations": [{"name": "x"}]},
+            0.1,
+            result='{"success": false, "error": "boom"}',
+        )
+        assert "skill skill" not in line  # the round-1 bug: verb and name fallbacks collided
+        assert "updated x" in line        # neutral fallback verb + the op's name
+        assert "boom" in line             # failure marker survives
+
 
 class TestEditDiffPreview:
 

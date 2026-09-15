@@ -998,8 +998,8 @@ _SKILL_MANAGE_VERBS = {
 
 def _cute_skill_manage(a: dict, r) -> str:
     """Completion line naming the skill a ``skill_manage`` call created or changed. The tool
-    advertises ONE call shape — an ``operations`` array — so the first op names the line; the
-    flat top-level form is only the legacy fallback for old transcripts and staged replay."""
+    advertises ONE call shape — an ``operations`` array — whose first op names the line; the
+    legacy flat top-level fields still take precedence when present (old transcripts, staged replay)."""
     ops = a.get("operations")
     head = ops[0] if isinstance(ops, list) and ops and isinstance(ops[0], dict) else {}
     action = str(a.get("action") or head.get("action") or "").lower()
