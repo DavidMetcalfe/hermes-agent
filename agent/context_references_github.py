@@ -106,6 +106,19 @@ def _github_get_json(api_path: str) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _fence(text: str, info: str) -> str:
+    """Fence *text* so that nothing inside it can close the fence early.
+
+    The body and the hunk are attacker-controlled (anyone can comment on a public PR),
+    so the fence is one backtick longer than the longest backtick run in the text —
+    CommonMark closes a fence only with a run at least as long, so a body containing
+    ``` cannot terminate its own block and forge a second one. Three is the minimum.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"{fence}{info}\n{text}\n{fence}"
+
+
 def build_comment_block(link: GitHubCommentLink) -> str | None:
     """Resolve *link* to the attached-context block, or ``None`` to fall back.
 
@@ -140,12 +153,13 @@ def build_comment_block(link: GitHubCommentLink) -> str | None:
         header = f"🔗 issue-comment {link.owner}/{link.repo}#{link.number}"
         fence = "issue-comment"
     # The body and the hunk are attacker-controlled (anyone can comment on a public
-    # PR), so each rides its own fence rather than a bare `--- diff hunk ---` sentinel:
-    # a body containing that line is then just body text, and it cannot pass itself off
-    # as the hunk section. `diff` is the same fence `_expand_git_reference` uses.
-    sections = [f"```{fence}\n@{author} on {url}\n\n{body}\n```"]
+    # PR), so each rides its own fence rather than a bare `--- diff hunk ---` sentinel —
+    # and the fence is sized to outrun any backtick run inside it, so a body cannot
+    # close its block early and forge the next one. `diff` is the fence
+    # `_expand_git_reference` uses.
+    sections = [_fence(f"@{author} on {url}\n\n{body}", fence)]
     diff_hunk = str(payload.get("diff_hunk") or "").strip()
     if diff_hunk:
-        sections.append(f"```diff\n{diff_hunk}\n```")
+        sections.append(_fence(diff_hunk, "diff"))
     content = "\n".join(sections)
     return f"{header} ({estimate_tokens_rough(content)} tokens)\n{content}"
