@@ -1,8 +1,10 @@
 import { atom } from 'nanostores'
+import type { ReactNode } from 'react'
 
 export interface ConfirmRequest {
   title: string
-  description?: string
+  /** Nodes are allowed so a multi-paragraph body can render as paragraphs. */
+  description?: ReactNode
   confirmLabel?: string
   cancelLabel?: string
   destructive?: boolean
