@@ -24,7 +24,7 @@ from agent.model_metadata import estimate_tokens_rough
 # joins `/pull/` because both hit the same issues-comments endpoint.
 _COMMENT_URL_PATTERN = re.compile(
     r"^https://github\.com/(?P<owner>[^/\s]+)/(?P<repo>[^/\s]+)"
-    r"/(?P<kind>pull|issues)/(?P<number>\d+)(?:/[^#\s]*)?"
+    r"/(?P<kind>pull|issues)/(?P<number>\d+)(?:/[^#\s]*)?(?:\?[^#\s]*)?"
     r"#(?:(?P<issue>issuecomment-(?P<issue_id>\d+))|(?P<review>discussion_r(?P<review_id>\d+)))$"
 )
 
@@ -54,6 +54,11 @@ def parse_comment_url(url: str) -> GitHubCommentLink | None:
     if match is None:
         return None
     is_review = match.group("review") is not None
+    # A review-thread anchor (`#discussion_r…`) only exists on a pull request; on an
+    # `/issues/` URL it is not a shape GitHub produces, so treat it as unrecognised
+    # rather than firing a pulls/comments request that can only 404.
+    if is_review and match.group("kind") == "issues":
+        return None
     comment_id = match.group("review_id") if is_review else match.group("issue_id")
     collection = "pulls/comments" if is_review else "issues/comments"
     return GitHubCommentLink(
@@ -69,7 +74,19 @@ def parse_comment_url(url: str) -> GitHubCommentLink | None:
 def _github_get_json(api_path: str) -> dict | None:
     """GET one GitHub REST path; return the parsed JSON object or ``None`` for
     ANY failure (exception, timeout, non-200 — rate limit / anonymous 403
-    included — or unparseable JSON). ``None`` means "fall back to the scrape"."""
+    included — or unparseable JSON). ``None`` means "fall back to the scrape".
+
+    A fresh ``GitHubAuth`` per call is deliberate, not an oversight: its token
+    cache is per instance, and hoisting that instance to a module-level singleton
+    to save one ``gh auth token`` spawn would hand profile A's credential to
+    profile B in a multiplexed process (``get_secret`` is profile-scoped; module
+    globals hold the launch profile's value). Constructing it per call matches
+    every other caller in the tree (``tools/skills_hub_search.py``,
+    ``hermes_cli/skills_hub.py``). The cost is bounded: one resolution per
+    resolved comment link, off the event loop via ``asyncio.to_thread``, and zero
+    subprocesses when a ``GITHUB_TOKEN``/``GH_TOKEN`` PAT is configured.
+    """
+
     import httpx
 
     from tools.skills_hub_github import GitHubAuth  # token ladder: PAT → gh CLI → App → anonymous
@@ -112,13 +129,23 @@ def build_comment_block(link: GitHubCommentLink) -> str | None:
     if link.is_review_comment:
         path = str(payload.get("path") or "")
         line = payload.get("line") or payload.get("original_line")
-        location = f"{path}:{line}" if path and line is not None else (path or "unknown location")
+        start = payload.get("start_line") or payload.get("original_start_line")
+        if path and line is not None:
+            location = f"{path}:{start}-{line}" if start is not None and start != line else f"{path}:{line}"
+        else:
+            location = path or "unknown location"
         header = f"🔗 review-comment {location}"
+        fence = "review-comment"
     else:
         header = f"🔗 issue-comment {link.owner}/{link.repo}#{link.number}"
-    lines = [f"{author} on {url}", "", body]
+        fence = "issue-comment"
+    # The body and the hunk are attacker-controlled (anyone can comment on a public
+    # PR), so each rides its own fence rather than a bare `--- diff hunk ---` sentinel:
+    # a body containing that line is then just body text, and it cannot pass itself off
+    # as the hunk section. `diff` is the same fence `_expand_git_reference` uses.
+    sections = [f"```{fence}\n@{author} on {url}\n\n{body}\n```"]
     diff_hunk = str(payload.get("diff_hunk") or "").strip()
     if diff_hunk:
-        lines += ["--- diff hunk ---", diff_hunk]
-    content = "\n".join(lines)
+        sections.append(f"```diff\n{diff_hunk}\n```")
+    content = "\n".join(sections)
     return f"{header} ({estimate_tokens_rough(content)} tokens)\n{content}"
