@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $visibleModels } from '@/store/model-visibility'
@@ -61,5 +61,20 @@ describe('an Edit Models row shows the raw id it toggles', () => {
     expect(baseRow?.textContent).toContain('Glm 5.3 Flash')
     expect(kiosRow?.textContent).toContain('Glm 5.3 Flash')
     expect(kiosRow).not.toBe(baseRow)
+  })
+
+  // The row's filter haystack carries the id, so an id-only query keeps the row
+  // it names and drops the sibling that shares its display name.
+  it('filters by an id fragment that the label does not contain', async () => {
+    renderDialog()
+
+    await screen.findAllByText('Glm 5.3 Flash')
+
+    fireEvent.change(screen.getByPlaceholderText('Search models'), { target: { value: 'kios' } })
+
+    await vi.waitFor(() => {
+      expect(screen.getByText('kios', { selector: 'mark' })).toBeDefined()
+      expect(screen.queryByText('b-ai/glm-5.3-flash')).toBeNull()
+    })
   })
 })
