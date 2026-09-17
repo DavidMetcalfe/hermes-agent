@@ -73,7 +73,7 @@ describe('MermaidRenderer source view', () => {
     fireEvent.click(screen.getByRole('button', { name: en.preview.renderedPreview }))
 
     // Back in diagram mode the whole surface is still the zoom trigger.
-    fireEvent.click(screen.getByTitle('Open diagram'))
+    fireEvent.click(screen.getByTitle(en.desktop.openDiagram))
 
     await waitFor(() => expect(screen.getByRole('dialog')).toBeTruthy())
   })

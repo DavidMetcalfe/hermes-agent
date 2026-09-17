@@ -127,7 +127,7 @@ export default function MermaidRenderer({ code, streaming }: RichFenceProps) {
         </div>
       ) : (
         <Zoomable
-          label="Open diagram"
+          label={t.desktop.openDiagram}
           onCopy={() => copySvgAsPng(svg)}
           overlay={
             <div

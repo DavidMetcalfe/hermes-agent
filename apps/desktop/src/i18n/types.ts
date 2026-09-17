@@ -3755,6 +3755,7 @@ export interface Translations {
     restartToSaveImages: string
     imageDownloadFailed: string
     openImage: string
+    openDiagram: string
     downloadImage: string
     savingImage: string
     imagePreviewFailed: string
