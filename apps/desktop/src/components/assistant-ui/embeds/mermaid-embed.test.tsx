@@ -151,6 +151,10 @@ describe('MermaidRenderer source view', () => {
 
     const toggle = await screen.findByRole('button', { name: '原始碼' })
 
+    // The zoom trigger beside it reads the same catalog, so a hardcoded English
+    // label on that trigger would fail this lookup.
+    expect(screen.getByTitle('開啟圖表')).toBeTruthy()
+
     fireEvent.click(toggle)
 
     expect(screen.getByRole('button', { name: '預覽' })).toBeTruthy()
