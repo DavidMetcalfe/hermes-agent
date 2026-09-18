@@ -607,18 +607,26 @@ async def get_session_timeline(
 @manage_router.get("/api/sessions/{session_id}/messages/around")
 async def get_session_messages_around(
     session_id: str, row_id: int = Query(..., ge=1), profile: Optional[str] = None,
-    limit: int = Query(120, ge=1, le=120),
+    limit: int = Query(120, ge=1, le=120), direction: str = Query("newer"),
 ):
-    """Bounded display page starting at a timeline prompt; no intervening payloads."""
+    """Bounded display page at a timeline row; no intervening payloads.
+
+    ``newer`` starts at a human prompt and reads forward (the jump page);
+    ``older`` reads the rows immediately before any display row, which is how a
+    jumped-to page continues backwards.
+    """
     from hermes_state_timeline import get_session_messages_around as read_around
+
+    if direction not in ("newer", "older"):
+        raise HTTPException(status_code=422, detail="direction must be 'newer' or 'older'")
 
     owner = _serving_profile(profile)
 
     def _read(db):
         sid = _timeline_session_id(db, session_id, owner)
-        page = read_around(db, sid, row_id, limit=limit)
+        page = read_around(db, sid, row_id, limit=limit, direction=direction)
         if page is None:
-            raise HTTPException(status_code=404, detail="Prompt not found")
+            raise HTTPException(status_code=404, detail="Row not found" if direction == "older" else "Prompt not found")
         return {"session_id": sid, "profile": owner, **page}
 
     result = await asyncio.to_thread(_with_db, profile, _read, read_only=True)

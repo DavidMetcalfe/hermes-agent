@@ -212,3 +212,56 @@ def test_timeline_sql_never_reads_tool_columns_or_writes(timeline_store, monkeyp
         assert accesses
     finally:
         reader.close()
+
+
+def test_older_direction_continues_a_jump_backwards_without_gaps(timeline_store):
+    """A revealed page keeps reading backwards from its own first row."""
+    db, client, _ = timeline_store
+    sid = "timeline-root"
+    db.append_messages_batch(sid, [
+        {"role": "user", "content": "first ask", "timestamp": 1},
+        *[{"role": "assistant", "content": f"step {i}"} for i in range(6)],
+        {"role": "user", "content": "second ask", "timestamp": 2},
+        {"role": "assistant", "content": "second answer"},
+        {"role": "user", "content": "third ask", "timestamp": 3},
+    ])
+    ids = [row["id"] for row in db.get_messages(sid)]
+    jump = client.get(f"/api/sessions/{sid}/messages/around", params={
+        "row_id": ids[-1], "limit": 2}).json()
+    assert [row["content"] for row in jump["messages"]] == ["third ask"]
+    assert jump["pagination"]["has_older"] is True
+    assert jump["pagination"]["has_newer"] is False
+    # The anchor is the page's own first row: a prompt above, and an assistant
+    # row below, which is the case prompt-only validation used to reject.
+    for anchor, expected in ((ids[-1], ids[-3:-1]), (ids[-2], ids[-4:-2])):
+        page = client.get(f"/api/sessions/{sid}/messages/around", params={
+            "row_id": anchor, "limit": 2, "direction": "older"}).json()
+        assert [row["id"] for row in page["messages"]] == expected
+        assert page["pagination"]["has_older"] is True
+        assert page["pagination"]["has_newer"] is True
+    # Page by page the walk reaches the session start, contiguous and undeduped.
+    walk = [child["id"] for child in jump["messages"]]
+    anchor = walk[0]
+    older_flags = []
+    while True:
+        page = client.get(f"/api/sessions/{sid}/messages/around", params={
+            "row_id": anchor, "limit": 4, "direction": "older"}).json()
+        older_flags.append(page["pagination"]["has_older"])
+        walk = [child["id"] for child in page["messages"]] + walk
+        if not page["messages"] or not page["pagination"]["has_older"]:
+            break
+        anchor = page["messages"][0]["id"]
+    assert walk == ids
+    # A full-size older page still reports older rows; only the session start retires them.
+    assert older_flags == [True, True, False]
+    start = client.get(f"/api/sessions/{sid}/messages/around", params={
+        "row_id": ids[0], "limit": 4, "direction": "older"}).json()
+    assert start["messages"] == []
+    assert start["pagination"]["has_older"] is False
+    assert client.get(f"/api/sessions/{sid}/messages/around", params={
+        "row_id": 999_999, "limit": 4, "direction": "older"}).status_code == 404
+    assert client.get(f"/api/sessions/{sid}/messages/around", params={
+        "row_id": ids[-1], "direction": "sideways"}).status_code == 422
+    forward = client.get(f"/api/sessions/{sid}/messages/around", params={
+        "row_id": ids[0], "limit": 2}).json()
+    assert [row["id"] for row in forward["messages"]] == ids[:2]

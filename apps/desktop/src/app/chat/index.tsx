@@ -318,10 +318,15 @@ export function ChatRuntimeBoundary({
   const tailState = storedId && transcriptTailStates ? transcriptTailState(storedId, tailProfile) : undefined
   const restBackfillAvailable = Boolean(tailState?.possiblyTruncated)
 
+  // Held as plain identifiers so the prepend callback's dependencies stay stable.
+  const historyPage = history.page
+  const prependHistoryOlder = history.prependOlder
+
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
-      // A historical page is not the live tail: never backfill into its store.
-      if (history.page) {return false}
+      // A historical page is not the live tail: it pages its own bounded window
+      // backwards instead of backfilling into the store.
+      if (historyPage) {return await prependHistoryOlder(beforePrepend)}
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -367,12 +372,12 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page]
+    [runtimeId, storedId, tailProfile, view, historyPage, prependHistoryOlder]
   )
 
-  // Page navigation stays on the timeline while inspecting history; the
-  // existing prepend action is specifically a live-tail operation.
-  const olderAvailable = !history.page && (windowed || restBackfillAvailable)
+  // Page navigation stays on the timeline while inspecting history: a revealed
+  // page reports its own older rows, the live tail keeps the store's.
+  const olderAvailable = history.page ? history.page.olderAvailable : (windowed || restBackfillAvailable)
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history

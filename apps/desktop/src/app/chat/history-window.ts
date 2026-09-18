@@ -6,6 +6,13 @@ import type { SessionMessagesResponse } from '@/types/hermes'
 
 export const HISTORY_WINDOW_LIMIT = 120
 
+/** Mirrors the reveal path's bound: a bridge that never answers must not hold the
+ *  page's only in-flight slot, or the affordance would never come back. */
+const OLDER_READ_TIMEOUT_MS = 15_000
+
+/** `newer` is the jump page at a prompt; `older` reads backwards from a row. */
+export type HistoryDirection = 'newer' | 'older'
+
 /** The around route is intentionally isolated from tail/backfill bookkeeping. */
 export interface HistoryWindowResponse extends SessionMessagesResponse {
   pagination: NonNullable<SessionMessagesResponse['pagination']> & {
@@ -20,15 +27,28 @@ interface HistoryPage {
   newerAvailable: boolean
 }
 
+/** Older rows join the display page only. The around read excludes its own
+ *  anchor, so consecutive windows meet without overlap. */
+function withOlderPage(page: HistoryPage, older: HistoryPage): HistoryPage {
+  return {
+    messages: [...older.messages, ...page.messages],
+    olderAvailable: older.olderAvailable,
+    newerAvailable: page.newerAvailable
+  }
+}
+
 export async function fetchHistoryWindow(
   storedId: string,
   rowId: number,
   scope: ProfileScope,
-  signal: AbortSignal
+  signal: AbortSignal,
+  direction: HistoryDirection = 'newer'
 ): Promise<HistoryPage> {
   signal.throwIfAborted()
   const route = capabilityScoped(scope)
   const query = new URLSearchParams({ row_id: String(rowId), limit: String(HISTORY_WINDOW_LIMIT) })
+
+  if (direction === 'older') {query.set('direction', 'older')}
 
   if (route.profile) {query.set('profile', route.profile)}
 
@@ -63,7 +83,8 @@ interface HistoryWindowOptions {
   isCurrent: () => boolean
 }
 
-/** A single replaceable display page, never merged into the live message store. */
+/** An isolated display page, paged in both directions, never merged into the
+ *  live message store. */
 export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: HistoryWindowOptions) {
   const lifetime = useMemo(() => ({ scopeKey }), [scopeKey])
   const latest = useRef({ lifetime, storedId, scope, isCurrent })
@@ -71,6 +92,8 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
   const pending = useRef<AbortController | null>(null)
   const [selection, setSelection] = useState<{ lifetime: object; page: HistoryPage } | null>(null)
   const page = selection?.lifetime === lifetime ? selection.page : null
+  const active = useRef(selection)
+  active.current = selection
 
   const cancel = useCallback(() => {
     pending.current?.abort()
@@ -130,5 +153,78 @@ export function useHistoryWindow({ scopeKey, storedId, scope, isCurrent }: Histo
     }
   }, [cancel])
 
-  return { page, revealRow, returnToLatest }
+  /** Continue the display page backwards. The live store is never touched, so
+   *  a failed read leaves the selected page exactly as it was. */
+  const prependOlder = useCallback(async (beforePrepend?: () => void): Promise<boolean> => {
+    const captured = latest.current
+    const selected = active.current
+
+    if (!captured.storedId || !captured.isCurrent()) {return false}
+
+    if (!selected || selected.lifetime !== captured.lifetime) {return false}
+    const anchor = selected.page.messages[0]?.rowId
+
+    if (anchor === undefined || !selected.page.olderAvailable) {return false}
+
+    // Single-flight: viewport-top auto-paging can ask again while a read is out,
+    // and aborting to restart it would starve the page — worse, the shared
+    // controller is also what a rail jump is waiting on.
+    if (pending.current) {return false}
+    const controller = new AbortController()
+    pending.current = controller
+    // Mirrors the reveal path's bound: a bridge that never answers must not hold
+    // this page's only in-flight slot, or the affordance would never come back.
+    const timeout = window.setTimeout(() => controller.abort(), OLDER_READ_TIMEOUT_MS)
+    let release!: () => void
+
+    const aborted = new Promise<null>(resolve => {
+      release = () => resolve(null)
+      controller.signal.addEventListener('abort', release, { once: true })
+    })
+
+    try {
+      const older = await Promise.race([
+        fetchHistoryWindow(captured.storedId, anchor, captured.scope, controller.signal, 'older'),
+        aborted
+      ])
+
+      if (!older || controller.signal.aborted || latest.current.lifetime !== captured.lifetime || !captured.isCurrent()) {
+        return false
+      }
+
+      const current = active.current
+
+      if (!current || current.lifetime !== captured.lifetime) {return false}
+      const grew = older.messages.length > 0
+      const retired = older.olderAvailable !== current.page.olderAvailable
+
+      // Nothing older to add and nothing to retire: keep the page object as-is.
+      if (!grew && !retired) {return false}
+
+      if (grew) {
+        // Network latency is not scroll intent: capture the reader at arrival,
+        // immediately before the page grows.
+        beforePrepend?.()
+      }
+
+      setSelection({
+        lifetime: captured.lifetime,
+        page: grew
+          ? withOlderPage(current.page, older)
+          : { ...current.page, olderAvailable: older.olderAvailable }
+      })
+
+      return grew
+    } catch {
+      // Unreadable older page: keep the page we have, and the affordance with it.
+      return false
+    } finally {
+      window.clearTimeout(timeout)
+      controller.signal.removeEventListener('abort', release)
+
+      if (pending.current === controller) {pending.current = null}
+    }
+  }, [])
+
+  return { page, revealRow, returnToLatest, prependOlder }
 }

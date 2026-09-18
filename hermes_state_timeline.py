@@ -97,21 +97,29 @@ def _register_functions(db, conn):
                          deterministic=True)
 
 
-def get_session_messages_around(db, session_id, row_id, *, limit=120):
-    """Read at most *limit* display rows starting at an exact human prompt.
+def get_session_messages_around(db, session_id, row_id, *, limit=120, direction="newer"):
+    """Read at most *limit* display rows at an exact row.
 
-    Existence probes/counts contain ids only. Full payloads are fetched only for
-    the selected bounded page, even when the anchor is deep in a transcript.
+    ``newer`` (the jump page) anchors on a human prompt and reads forward from
+    it. ``older`` reads the rows immediately BEFORE any display row, which is
+    how a jumped-to page continues backwards: that anchor is whatever row the
+    page starts with, usually an assistant or tool row, so only existence is
+    required. Existence probes/counts contain ids only. Full payloads are
+    fetched only for the selected bounded page, even when the anchor is deep in
+    a transcript.
     """
+    if direction not in ("newer", "older"):
+        raise ValueError(f"unknown around direction: {direction}")
     with _snapshot(db) as conn:
         _register_functions(db, conn)
-        anchor = conn.execute(
-            "SELECT content, display_kind, _compressed_summary FROM messages "
-            "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",
-            (session_id, row_id),
-        ).fetchone()
-        if anchor is None or not _prompt_preview(db, *anchor):
-            return None
+        if direction == "newer":
+            anchor = conn.execute(
+                "SELECT content, display_kind, _compressed_summary FROM messages "
+                "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",
+                (session_id, row_id),
+            ).fetchone()
+            if anchor is None or not _prompt_preview(db, *anchor):
+                return None
         sql = _display_rows_sql(conn, session_id)
         params = {"sid": session_id, "row_id": row_id, "limit": limit}
         selected = conn.execute(sql + """
@@ -120,14 +128,32 @@ def get_session_messages_around(db, session_id, row_id, *, limit=120):
         if selected is None:
             return None
         params["start"] = selected["sort_id"]
-        counts = conn.execute(sql + """
-            SELECT COUNT(*) AS total, COALESCE(SUM(sort_id < :start), 0) AS offset FROM display_rows
-        """, params).fetchone()
-        rows = conn.execute(sql + """
-            SELECT m.* FROM (SELECT row_id, sort_id FROM display_rows
-                            WHERE sort_id >= :start ORDER BY sort_id LIMIT :limit) AS page
-            JOIN messages m ON m.id = page.row_id ORDER BY page.sort_id
-        """, params).fetchall()
+        if direction == "older":
+            # The anchor row itself stays out of the page, so the older window is
+            # contiguous with the page that ends at it: nothing to dedupe. The
+            # window's oldest row is resolved in SQL, so the offset stays a read
+            # of ids and the payload read matches the forward branch.
+            rows = conn.execute(sql + """
+                SELECT m.* FROM (SELECT row_id, sort_id FROM display_rows
+                                WHERE sort_id < :start ORDER BY sort_id DESC LIMIT :limit) AS page
+                JOIN messages m ON m.id = page.row_id ORDER BY page.sort_id
+            """, params).fetchall()
+            counts = conn.execute(sql + """
+                SELECT COUNT(*) AS total,
+                       COALESCE(SUM(sort_id < (SELECT MIN(sort_id) FROM (
+                           SELECT sort_id FROM display_rows
+                           WHERE sort_id < :start ORDER BY sort_id DESC LIMIT :limit))), 0) AS offset
+                FROM display_rows
+            """, params).fetchone()
+        else:
+            counts = conn.execute(sql + """
+                SELECT COUNT(*) AS total, COALESCE(SUM(sort_id < :start), 0) AS offset FROM display_rows
+            """, params).fetchone()
+            rows = conn.execute(sql + """
+                SELECT m.* FROM (SELECT row_id, sort_id FROM display_rows
+                                WHERE sort_id >= :start ORDER BY sort_id LIMIT :limit) AS page
+                JOIN messages m ON m.id = page.row_id ORDER BY page.sort_id
+            """, params).fetchall()
     messages = [db._row_to_message_dict(row, warn_context="timeline jump", summary_flag=True) for row in rows]
     return {"messages": messages, "pagination": {
         "row_id": row_id, "limit": limit, "returned": len(messages), "order": "oldest",
