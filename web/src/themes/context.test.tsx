@@ -107,7 +107,29 @@ async function fireFocusAndSettle() {
   await flush();
 }
 
+// jsdom runs without an origin here (per-file @vitest-environment jsdom on a
+// node-default config), so localStorage is undefined — and on Node 26 the bare
+// global resolves to Node's own (unavailable without --localstorage-file)
+// storage instead of a usable one. Stub it so the provider's persistence and
+// the assertions below share one store on every Node version.
+const localStorageMock = (() => {
+  let store: Record<string, string> = {};
+  return {
+    getItem: (key: string) => store[key] ?? null,
+    setItem: (key: string, value: string) => {
+      store[key] = String(value);
+    },
+    removeItem: (key: string) => {
+      delete store[key];
+    },
+    clear: () => {
+      store = {};
+    },
+  };
+})();
+
 beforeEach(() => {
+  vi.stubGlobal("localStorage", localStorageMock);
   localStorage.clear();
   apiMocks.getThemes.mockReset();
   apiMocks.setTheme.mockReset();
