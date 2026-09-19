@@ -9,6 +9,9 @@ post-processes the result for interactive pickers (Telegram, Discord):
 - Provider rows with an empty ``models`` list are dropped, except custom
   endpoints (``is_user_defined=True`` with an ``api_url``) where the user
   may supply their own model set through config.
+- OpenRouter's declared ``providers.openrouter.models`` ids are preserved
+  when the row is rebuilt from the curated list — declared ids are merged
+  back on top (deduped, declared-first) exactly as for every other provider.
 
 These tests exercise the filter in isolation by mocking
 ``list_authenticated_providers`` and ``fetch_openrouter_models`` so no
@@ -240,3 +243,64 @@ def test_distinct_kimi_china_credential_still_listed(monkeypatch):
     assert slugs.count("kimi-coding") == 1
     assert "kimi" not in slugs          # alias collapsed into the canonical row
     assert "kimi-coding-cn" in slugs    # distinct China endpoint preserved
+
+
+# ---------------------------------------------------------------------------
+# Declared providers.openrouter.models must survive the curated-list override
+# ---------------------------------------------------------------------------
+
+
+def test_openrouter_declared_models_survive_curated_override(monkeypatch):
+    """``providers.openrouter.models`` extends the picker row, not replaces it.
+
+    The curated fetch does not contain the declared id, so a rebuild from the
+    curated list alone silently drops it. Declared ids are merged back on top
+    (declared-first, deduped) with the same semantics as _lap_builtin_rows,
+    and they must survive the ``max_models`` cap.
+    """
+    declared = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+    def _fake(**kwargs):
+        return [_make_provider("openrouter", models=[declared, "z-ai/glm-5.2"])]
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", _fake)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _fake)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",
+                        lambda *a, **kw: [("z-ai/glm-5.2", "")])
+
+    result = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=50)
+    row = next(p for p in result if p["slug"] == "openrouter")
+    assert row["models"] == [declared, "z-ai/glm-5.2"]
+    assert row["total_models"] == 2
+
+    # The cap truncates the curated tail, never the user's declared ids.
+    capped = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=1)
+    capped_row = next(p for p in capped if p["slug"] == "openrouter")
+    assert capped_row["models"] == [declared]
+
+
+def test_openrouter_declared_models_survive_curated_fetch_failure(monkeypatch):
+    """Fail-open contract: a raising catalog fetch must not lose declared ids.
+
+    When ``fetch_openrouter_models`` raises, the row falls back to the base
+    rows' models; the user's declared ids must still be present so the
+    gateway picker keeps working (and keeps showing) their configured models.
+    """
+    declared = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+
+    def _fake(**kwargs):
+        return [_make_provider("openrouter", models=[declared, "z-ai/glm-5.2"])]
+
+    def _boom(*a, **kw):
+        raise RuntimeError("catalog fetch failed")
+
+    monkeypatch.setattr(model_switch, "list_authenticated_providers", _fake)
+    monkeypatch.setattr(hermes_cli_model_switch_providers, "list_authenticated_providers", _fake)
+    monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models", _boom)
+
+    result = model_switch_providers.list_picker_providers(
+        user_providers={"openrouter": {"models": [declared]}}, max_models=50)
+    row = next(p for p in result if p["slug"] == "openrouter")
+    assert declared in row["models"]

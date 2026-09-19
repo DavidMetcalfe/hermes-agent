@@ -1299,7 +1299,7 @@ def list_picker_providers(
     OpenRouter's list is replaced with :func:`hermes_cli.models.fetch_openrouter_models` (curated
     snapshot filtered against the live catalog) and rows left with no models are dropped — except
     custom endpoints, where the user may supply their own model set through config."""
-    from hermes_cli.model_switch import list_authenticated_providers
+    from hermes_cli.model_switch import _declared_model_ids, list_authenticated_providers
     from hermes_cli.models import fetch_openrouter_models
     providers = list_authenticated_providers(
         current_provider=current_provider, current_base_url=current_base_url,
@@ -1316,8 +1316,14 @@ def list_picker_providers(
             except Exception:
                 live_ids = list(p.get("models", []))
             p = dict(p)
-            p["models"] = live_ids[:max_models] if max_models is not None else live_ids
-            p["total_models"] = len(live_ids)
+            # A ``providers.openrouter.models`` block extends this row exactly as it does for
+            # every other provider (_lap_builtin_rows / section 2); rebuilding the list from the
+            # curated catalog must not drop the user's declared ids.
+            configured = user_providers.get("openrouter") if isinstance(user_providers, dict) else None
+            declared = _declared_model_ids(configured.get("models")) if isinstance(configured, dict) else []
+            merged_ids = list(dict.fromkeys([*declared, *live_ids]))
+            p["models"] = merged_ids[:max_models] if max_models is not None else merged_ids
+            p["total_models"] = len(merged_ids)
 
         is_custom_endpoint = bool(p.get("is_user_defined")) and bool(p.get("api_url"))
         if p.get("models") or is_custom_endpoint:
