@@ -282,16 +282,18 @@ def test_openrouter_declared_models_survive_curated_override(monkeypatch):
 
 
 def test_openrouter_declared_models_survive_curated_fetch_failure(monkeypatch):
-    """Fail-open contract: a raising catalog fetch must not lose declared ids.
+    """Fail-open contract: declared ids are still MERGED when the curated fetch raises.
 
-    When ``fetch_openrouter_models`` raises, the row falls back to the base
-    rows' models; the user's declared ids must still be present so the
-    gateway picker keeps working (and keeps showing) their configured models.
+    When ``fetch_openrouter_models`` raises, the row is rebuilt from the base rows'
+    models; the fake base row here deliberately does NOT contain the declared id, so
+    only the merge step can put it in the row. Neutralising the merge (making
+    ``_with_declared_models`` an identity) turns this test red — it pins the merge on
+    the exception path, not the fallback's copy of the base models.
     """
     declared = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 
     def _fake(**kwargs):
-        return [_make_provider("openrouter", models=[declared, "z-ai/glm-5.2"])]
+        return [_make_provider("openrouter", models=["z-ai/glm-5.2"])]
 
     def _boom(*a, **kw):
         raise RuntimeError("catalog fetch failed")

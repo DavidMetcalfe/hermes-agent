@@ -80,3 +80,86 @@ def test_xai_oauth_flow_prompts_with_declared_ids(monkeypatch):
     monkeypatch.setattr(hm, "provider_model_ids", lambda *_a, **_kw: [declared, *curated])
     setup._model_flow_xai_oauth(config)
     assert captured[-1] == [declared, *curated]
+
+
+def _stub_bedrock_prompts(monkeypatch, captured: list):
+    """Stub the Bedrock wizard's prompt + persist seams; return the captured list."""
+    from hermes_cli import model_setup_flows_bedrock as setup_bedrock
+
+    monkeypatch.setattr(
+        setup_bedrock, "_pick_model_or_prompt",
+        lambda model_list, *_a, **_kw: captured.append(list(model_list)) or "")
+    monkeypatch.setattr(setup_bedrock, "_finish_model", lambda *_a, **_kw: None)
+    return setup_bedrock
+
+
+def test_bedrock_flow_prompts_with_declared_ids(monkeypatch):
+    """``_model_flow_bedrock`` prompts with declared ids merged over both branches.
+
+    Credentials, region prompts, auth-mode choice and the selection prompt are
+    stubbed; live discovery is stubbed with a fixed model set. The declared id is in
+    neither branch's list pre-fix, so the wrapped prompt list must carry it
+    first. Second arm: declared id already discovered — merged exactly once.
+    Third arm: live discovery empty (static curated fallback) — also merged.
+    """
+    import agent.bedrock_adapter as bedrock_adapter
+    import hermes_cli.models as hm
+
+    declared = "custom.bedrock.nova-4"
+    live = [{"id": "anthropic.claude-sonnet-4-6"}, {"id": "meta.llama4-maverick"}]
+    captured: list = []
+    setup_bedrock = _stub_bedrock_prompts(monkeypatch, captured)
+
+    monkeypatch.setattr(bedrock_adapter, "has_aws_credentials", lambda: True)
+    monkeypatch.setattr(bedrock_adapter, "resolve_aws_auth_env_var", lambda: "AWS_ACCESS_KEY_ID")
+    monkeypatch.setattr(bedrock_adapter, "resolve_bedrock_region", lambda: "us-east-1")
+    # Region prompt and auth-mode choice both take the default ("") answer.
+    monkeypatch.setattr(setup_bedrock, "_ask", lambda *_a, **_kw: "")
+
+    # Live-discovery branch.
+    monkeypatch.setattr(bedrock_adapter, "discover_bedrock_models", lambda _region: list(live))
+    setup_bedrock._model_flow_bedrock({"providers": {"bedrock": {"models": [declared]}}})
+    assert captured[-1] == [declared, "anthropic.claude-sonnet-4-6", "meta.llama4-maverick"]
+
+    # Declared id already in the discovered set: exactly one entry, declared-first.
+    monkeypatch.setattr(bedrock_adapter, "discover_bedrock_models",
+                        lambda _region: [{"id": declared}] + list(live))
+    setup_bedrock._model_flow_bedrock({"providers": {"bedrock": {"models": [declared]}}})
+    assert captured[-1] == [declared, "anthropic.claude-sonnet-4-6", "meta.llama4-maverick"]
+
+    # Static curated fallback branch (discovery unavailable).
+    monkeypatch.setattr(bedrock_adapter, "discover_bedrock_models", lambda _region: [])
+    monkeypatch.setattr(hm, "_PROVIDER_MODELS", {"bedrock": ["anthropic.claude-sonnet-4-6"]})
+    setup_bedrock._model_flow_bedrock({"providers": {"bedrock": {"models": [declared]}}})
+    assert captured[-1] == [declared, "anthropic.claude-sonnet-4-6"]
+
+    # No declaration at all: the flow's own list passes through untouched.
+    setup_bedrock._model_flow_bedrock({})
+    assert captured[-1] == ["anthropic.claude-sonnet-4-6"]
+
+
+def test_bedrock_api_key_flow_prompts_with_declared_ids(monkeypatch):
+    """``_model_flow_bedrock_api_key`` merges declared ids into the mantle static list.
+
+    The declaration key is still ``bedrock`` even though the flow confirms as a
+    ``custom`` provider entry (bedrock-mantle). The secret resolution and the
+    prompt are stubbed — no key prompt, no config writes.
+    """
+    import hermes_cli.auth as auth_module
+    import hermes_cli.models as hm
+
+    declared = "custom.bedrock.nova-4"
+    captured: list = []
+    setup_bedrock = _stub_bedrock_prompts(monkeypatch, captured)
+
+    monkeypatch.setattr(auth_module, "_resolve_api_key_provider_secret",
+                        lambda *_a, **_kw: ("sk-mantle-test", "AWS_BEARER_TOKEN_BEDROCK"))
+    monkeypatch.setattr(hm, "_PROVIDER_MODELS", {"bedrock": ["anthropic.claude-sonnet-4-6"]})
+
+    setup_bedrock._model_flow_bedrock_api_key(
+        {"providers": {"bedrock": {"models": [declared]}}}, "us-east-1")
+    assert captured[-1] == [declared, "anthropic.claude-sonnet-4-6"]
+
+    # No declaration: curated list passes through untouched.
+    setup_bedrock._model_flow_bedrock_api_key({}, "us-east-1")
+    assert captured[-1] == ["anthropic.claude-sonnet-4-6"]
