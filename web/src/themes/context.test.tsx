@@ -34,14 +34,28 @@ const STORAGE_KEY = "hermes-dashboard-theme";
 let container: HTMLDivElement;
 let root: Root;
 
-function Probe() {
+function Probe({ pick }: { pick?: string }) {
   // Imported lazily below via the provider's own context hook.
   const { useTheme } = probeHooks;
-  const { themeName } = useTheme();
-  return <span>{themeName}</span>;
+  const { themeName, setTheme } = useTheme();
+  return (
+    <>
+      <span>{themeName}</span>
+      {pick ? (
+        // Real user-pick surface for the race test: a click, like in the
+        // app's picker — no context hand-out through module scope.
+        <button type="button" aria-label="pick" onClick={() => setTheme(pick)} />
+      ) : null}
+    </>
+  );
 }
 
-const probeHooks: { useTheme: () => { themeName: string } } = {
+const probeHooks: {
+  useTheme: () => {
+    themeName: string;
+    setTheme: (name: string) => void;
+  };
+} = {
   useTheme: () => {
     throw new Error("not initialised");
   },
@@ -54,17 +68,24 @@ async function flush() {
   });
 }
 
-async function renderProvider(initialActive: string) {
+async function renderProvider(
+  initialActive: string,
+  opts: { pick?: string } = {},
+) {
   apiMocks.getThemes.mockResolvedValue({ active: initialActive, themes: [] });
   const { ThemeProvider, useTheme } = await import("./context");
-  probeHooks.useTheme = useTheme as unknown as () => { themeName: string };
+  probeHooks.useTheme =
+    useTheme as unknown as () => {
+      themeName: string;
+      setTheme: (name: string) => void;
+    };
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
   await act(async () => {
     root.render(
       <ThemeProvider>
-        <Probe />
+        <Probe pick={opts.pick} />
       </ThemeProvider>,
     );
   });
@@ -90,6 +111,7 @@ beforeEach(() => {
   localStorage.clear();
   apiMocks.getThemes.mockReset();
   apiMocks.setTheme.mockReset();
+  apiMocks.setTheme.mockResolvedValue({ ok: true });
   apiMocks.getThemes.mockResolvedValue({ active: "default", themes: [] });
   apiMocks.getFontPref.mockReset();
   apiMocks.getFontPref.mockResolvedValue({ font: "" });
@@ -152,6 +174,43 @@ describe("ThemeProvider refetch-on-refocus", () => {
 
     expect(container.textContent).toBe("nous-blue");
     expect(apiMocks.setTheme).toHaveBeenCalledWith("nous-blue");
+  });
+
+  it("drops a focus refetch that resolves after the user picked another theme", async () => {
+    await renderProvider("default", { pick: "midnight" });
+    expect(container.textContent).toBe("default");
+
+    // Hold the focus refetch open so a user pick can land mid-flight.
+    let resolveFetch!: (value: { active: string; themes: [] }) => void;
+    const pending = new Promise<{ active: string; themes: [] }>((resolve) => {
+      resolveFetch = resolve;
+    });
+    apiMocks.getThemes.mockImplementation(() => pending);
+
+    fireFocus();
+
+    // The click happens while the refetch is still in flight — exactly
+    // the window where the stale answer used to clobber the pick.
+    const pickButton = container.querySelector("button")!;
+    act(() => {
+      pickButton.click();
+    });
+    expect(container.textContent).toBe("midnight");
+
+    // The server answer finally arrives carrying the PRE-PICK active
+    // name (the writer's write hadn't been read yet). Adopting it would
+    // flip the tab back to the old palette while the server already
+    // holds the picked theme — the response must be dropped silently.
+    await act(async () => {
+      resolveFetch({ active: "nous-blue", themes: [] });
+      await pending;
+    });
+
+    expect(container.textContent).toBe("midnight");
+    expect(localStorage.getItem(STORAGE_KEY)).toBe("midnight");
+    // Only the user's own PUT ran; the dropped response wrote nothing.
+    expect(apiMocks.setTheme).toHaveBeenCalledTimes(1);
+    expect(apiMocks.setTheme).toHaveBeenCalledWith("midnight");
   });
 
   it("does not refetch while the document is hidden", async () => {

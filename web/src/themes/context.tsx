@@ -479,6 +479,14 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     themeNameRef.current = themeName;
   }, [themeName]);
 
+  // Bumped whenever the user picks a theme, so an in-flight getThemes()
+  // (mount fetch or focus refetch) can tell it was superseded: its
+  // `active` predates the pick, and adopting it would flip the tab back
+  // to the old palette while the server already holds the new one. Only
+  // user picks bump this — an adopted server value must never invalidate
+  // a concurrent read.
+  const themeGeneration = useRef(0);
+
   /** Adopt the server's active theme name: run it through the same legacy
    *  alias migration the initial read uses, move state, and mirror into
    *  localStorage so a reload doesn't flash the pre-switch palette. Shared
@@ -498,6 +506,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
     let cancelled = false;
+    const generation = themeGeneration.current;
     api
       .getThemes()
       .then((resp) => {
@@ -520,7 +529,13 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           }
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
-        if (resp.active) {
+        if (
+          resp.active &&
+          // A user pick during the fetch outranks this response — its
+          // PUT already told the server the new name, so adopting the
+          // older `active` here would flip the tab back. Drop silently.
+          themeGeneration.current === generation
+        ) {
           const migratedActive = adoptServerThemeName(resp.active);
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
@@ -576,11 +591,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
       // let the in-flight one finish instead of firing a second one.
       if (refetchInFlight.current) return;
       refetchInFlight.current = true;
+      const generation = themeGeneration.current;
       api
         .getThemes()
         .then((resp) => {
           if (cancelled) return;
-          if (resp.active) adoptServerThemeName(resp.active);
+          // Same rule as the mount fetch: a pick made while this request
+          // was in flight outranks the response — adopt nothing instead
+          // of overwriting the fresh pick with the server's older value.
+          if (resp.active && themeGeneration.current === generation) {
+            adoptServerThemeName(resp.active);
+          }
         })
         .catch(() => {})
         .finally(() => {
@@ -607,6 +628,9 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
         ...Object.keys(userThemeDefs),
       ]);
       const next = knownNames.has(name) ? name : "default";
+      // Invalidate any getThemes() still in flight before the pick lands,
+      // so a response carrying the pre-pick `active` can't overwrite it.
+      themeGeneration.current += 1;
       setThemeName(next);
       if (typeof window !== "undefined") {
         window.localStorage.setItem(STORAGE_KEY, next);
