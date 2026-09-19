@@ -311,14 +311,15 @@ def _profile_global_effort(profile_home) -> object:
     resolves the ACTIVE profile and ``session.create`` is not profile-scoped, so a secondary-profile
     echo would otherwise be compared against the LAUNCH profile's default — while the fall-through it
     protects (:func:`_load_reasoning_config`) runs inside ``_profile_build_scope`` and reads the TARGET
-    profile. Same reason as ``_profile_configured_cwd`` (#40334), same config pipeline.
+    profile. Same reason as ``_profile_configured_cwd`` (#40334), same config pipeline
+    (``load_user_config_effective``: ``${VAR}`` expansion + managed overlay).
     """
     if profile_home is None:  # launch profile: the ambient read IS the target's config
         return ((_load_cfg() or {}).get("agent") or {}).get("reasoning_effort")
     with contextlib.suppress(Exception):
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.config_effective import load_user_config_effective
         p = Path(profile_home) / "config.yaml"
-        cfg = _expand_cfg(_apply_managed(read_user_config_raw(p))) if p.exists() else {}
+        cfg = load_user_config_effective(p) if p.exists() else {}
         return ((cfg or {}).get("agent") or {}).get("reasoning_effort")
     return None
 
