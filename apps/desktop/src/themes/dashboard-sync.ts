@@ -37,9 +37,12 @@ export const DASHBOARD_SHARED_THEMES: Readonly<Record<string, string>> = Object.
   mono: 'mono'
 })
 
-// Last dashboard theme name observed/applied — the sync baseline. A single
-// value: there is one backend `dashboard.theme` regardless of which desktop
-// profile is watching it.
+// Last dashboard theme name observed/applied — the sync baseline.
+// A single global value while the sync toggle is per-profile: there is exactly
+// one `dashboard.theme` on the dashboard server, so the baseline tracks the
+// dashboard's value, not any profile's. A per-profile baseline would let one
+// profile's observation go invisible to the others, and each would then paint
+// the same theme again on its next look.
 const BASELINE_KEY = 'hermes-desktop-dashboard-theme-v1'
 
 // Per-profile opt-out. Only the 'off' value is stored, so a profile that never
@@ -62,8 +65,9 @@ export const ingestDashboardTheme = (active: null | string | undefined, { profil
     return
   }
 
-  // Disabled profiles record nothing either — switching the toggle back on
-  // then adopts the then-current dashboard theme ("ON = adopt").
+  // Disabled profiles record nothing either — so re-enabling does NOT adopt
+  // the current dashboard theme: the next observation finds no baseline,
+  // seeds it, and paints nothing. Only a subsequent dashboard change paints.
   if (!isDashboardSyncEnabled(profile)) {
     return
   }
@@ -119,21 +123,31 @@ export async function publishDashboardTheme(desktopSkinName: string, { profile }
   }
 }
 
+// `gateway.ready`, window `focus` and `visibilitychange` can land in the same
+// tick; this flag collapses those into one GET. Late callers return immediately
+// rather than queueing — the in-flight fetch observes the freshest state the
+// backend can serve anyway.
+let refreshInFlight = false
+
 /**
  * Pull the Dashboard's active theme and fold it in. Swallows failures: a
  * backend that isn't up yet must not surface an error — the next
  * focus/reconnect retries.
  */
 export async function refreshDashboardTheme(profile: string): Promise<void> {
-  if (!isDashboardSyncEnabled(profile)) {
+  if (refreshInFlight || !isDashboardSyncEnabled(profile)) {
     return
   }
+
+  refreshInFlight = true
 
   try {
     const response = await getDashboardThemes()
     ingestDashboardTheme(response.active, { profile })
   } catch {
     // The next refresh picks it up once the backend is answering.
+  } finally {
+    refreshInFlight = false
   }
 }
 
@@ -163,6 +177,9 @@ export const toDashboardTheme = (desktopSkinName: null | string | undefined): nu
     return null
   }
 
+  // Reverse-scanned rather than a direct key lookup: the map is identity
+  // today, so a lookup would pass every test — but scanning by skin value
+  // stays correct if a name ever maps to a different desktop skin.
   const entry = Object.entries(DASHBOARD_SHARED_THEMES).find(([, skin]) => skin === name)
 
   return entry ? entry[0] : null

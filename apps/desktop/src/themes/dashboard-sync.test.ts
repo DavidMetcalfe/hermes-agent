@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getDashboardThemes, setDashboardTheme } from '@/api/dashboard-themes'
+import type { DashboardThemesResponse } from '@/types/hermes'
 
 import { $pendingSkinApply } from './backend-sync'
 import {
@@ -111,17 +112,17 @@ describe('dashboard theme sync', () => {
       expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBeNull()
     })
 
-    it('adopts the live dashboard theme when sync is switched back on', () => {
+    it('re-enabling seeds the baseline without adopting; only a later change paints', () => {
       setDashboardSyncEnabled(profile, false)
       ingest('midnight') // ignored: disabled
       setDashboardSyncEnabled(profile, true)
 
-      ingest('ember') // first observation after re-enabling records, never paints
+      ingest('ember') // first observation after re-enabling seeds, never adopts
 
       expect($pendingSkinApply.get()).toBeNull()
       expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('ember')
 
-      ingest('midnight') // a genuine change now paints
+      ingest('midnight') // adoption needs a dashboard change AFTER re-enabling
       expect($pendingSkinApply.get()).toBe('midnight')
     })
   })
@@ -135,14 +136,17 @@ describe('dashboard theme sync', () => {
     })
 
     it('does not echo a value it just applied back to the dashboard', async () => {
+      // The dashboard drove the desktop to 'midnight' (seed, then change paints).
+      ingest('ember')
+      ingest('midnight')
+
+      expect($pendingSkinApply.get()).toBe('midnight')
+
+      // Re-publishing the same skin sees a baseline that already equals the
+      // mapped name — the actual echo-suppression branch inside publish.
       await publishDashboardTheme('midnight', { profile })
 
-      expect(putTheme).toHaveBeenCalledWith('midnight')
-
-      ingest('midnight') // the PUT echoes back through GET — must not repaint or re-PUT
-
-      expect($pendingSkinApply.get()).toBeNull()
-      expect(putTheme).toHaveBeenCalledTimes(1)
+      expect(putTheme).not.toHaveBeenCalled()
     })
 
     it('never PUTs a desktop-only skin', async () => {
@@ -198,6 +202,26 @@ describe('dashboard theme sync', () => {
       await refreshDashboardTheme(profile)
 
       expect(getThemes).not.toHaveBeenCalled()
+    })
+
+    it('collapses concurrent refreshes into a single fetch', async () => {
+      // A promise we control, so both calls launch while one GET is in flight —
+      // the gateway.ready + focus + visibilitychange same-tick storm.
+      let resolveFetch: (value: DashboardThemesResponse) => void = () => {}
+      getThemes.mockReturnValue(
+        new Promise<DashboardThemesResponse>(resolve => {
+          resolveFetch = resolve
+        })
+      )
+
+      const first = refreshDashboardTheme(profile)
+      const second = refreshDashboardTheme(profile) // same tick — must not re-fetch
+
+      resolveFetch({ themes: [], active: 'ember' })
+      await Promise.all([first, second])
+
+      expect(getThemes).toHaveBeenCalledTimes(1)
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('ember')
     })
   })
 
