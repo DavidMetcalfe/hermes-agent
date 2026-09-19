@@ -304,3 +304,51 @@ def test_openrouter_declared_models_survive_curated_fetch_failure(monkeypatch):
         user_providers={"openrouter": {"models": [declared]}}, max_models=50)
     row = next(p for p in result if p["slug"] == "openrouter")
     assert declared in row["models"]
+
+
+# ---------------------------------------------------------------------------
+# Declared providers.<slug>.models must reach the section-2b canonical rows
+# ---------------------------------------------------------------------------
+
+
+def _stub_tokenhub_discovery(monkeypatch):
+    """Isolate list_authenticated_providers to one canonical-only provider.
+
+    ``tencent-tokenhub`` is in CANONICAL_PROVIDERS but not models.dev-mapped and has no
+    Hermes overlay, so sections 1/2 cannot claim it — its row is built ONLY by the
+    section-2b canonical lap. The models.dev fetch and ``cached_provider_model_ids`` are
+    stubbed so discovery stays offline and deterministic.
+    """
+    import agent.models_dev as md
+    import hermes_cli.models as hm
+    import hermes_cli.models_catalog_static as models_catalog_static
+    from hermes_cli import models_catalog_static as _mcs
+
+    monkeypatch.setattr(md, "PROVIDER_TO_MODELS_DEV", {})
+    monkeypatch.setattr(md, "fetch_models_dev", lambda *a, **k: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+    canonical = [models_catalog_static.ProviderEntry("tencent-tokenhub", "Tencent TokenHub", "desc")]
+    monkeypatch.setattr(hm, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(_mcs, "CANONICAL_PROVIDERS", canonical)
+    monkeypatch.setattr(hm, "cached_provider_model_ids", lambda *a, **k: ["hunyuan-3.0"])
+    monkeypatch.setattr(hm, "clear_provider_models_cache", lambda *a, **k: None)
+
+
+def test_declared_models_extend_canonical_section_2b_row(monkeypatch):
+    """``providers.<canonical-slug>.models`` extends the section-2b picker row.
+
+    A declared id the discovered catalog does not carry must lead the row — deduped,
+    declared-first — exactly as sections 1/2 extend theirs; section 3 cannot rescue it
+    afterwards because the canonical row owns the slug.
+    """
+    declared = "hunyuan-turbo-latest"
+    _stub_tokenhub_discovery(monkeypatch)
+    monkeypatch.setenv("TOKENHUB_API_KEY", "sk-test-tokenhub")
+
+    rows = model_switch.list_authenticated_providers(
+        user_providers={"tencent-tokenhub": {"models": [declared]}}, max_models=10)
+    row = next(r for r in rows if r["slug"] == "tencent-tokenhub")
+    assert row["models"][0] == declared
+    assert row["models"].count(declared) == 1
+    # The declared id extends the discovered catalog, it never replaces it.
+    assert "hunyuan-3.0" in row["models"]

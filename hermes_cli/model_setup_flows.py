@@ -64,8 +64,11 @@ def _model_flow_openrouter(config, current_model=""):
         return
 
     from hermes_cli.models import model_ids
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.models_pricing import get_pricing_for_provider
-    openrouter_models = model_ids(force_refresh=True)
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Declared providers.openrouter.models extend the catalog (deduped, declared-first).
+    openrouter_models = _with_declared_models(_providers, "openrouter", model_ids(force_refresh=True))
     # Live pricing is non-blocking — empty dict on failure.
     pricing = get_pricing_for_provider("openrouter", force_refresh=True)
     selected = _prompt_model_selection(
@@ -91,8 +94,11 @@ def _model_flow_ai_gateway(config, current_model=""):
         return
 
     from hermes_cli.models import ai_gateway_model_ids
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.models_pricing import get_pricing_for_provider
-    models_list = ai_gateway_model_ids(force_refresh=True)
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    # Declared providers.ai-gateway.models extend the catalog (deduped, declared-first).
+    models_list = _with_declared_models(_providers, "ai-gateway", ai_gateway_model_ids(force_refresh=True))
     pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
     selected = _prompt_model_selection(models_list, current_model=current_model, pricing=pricing)
     # Inline credentials are deliberately left untouched here (historical behavior).
@@ -296,6 +302,7 @@ def _model_flow_nous(config, current_model="", args=None):
     # instead of the hundreds returned by the live /models endpoint.
     from hermes_cli.models import check_nous_free_tier, get_curated_nous_model_ids
     from hermes_cli.models_pricing import get_pricing_for_provider
+    from hermes_cli.model_switch import _with_declared_models
     from hermes_cli.model_switch_providers import _free_tier_nous_row
     tier_row = _free_tier_nous_row({"name": "Nous Portal", "models": []})
     if tier_row is None:
@@ -311,7 +318,9 @@ def _model_flow_nous(config, current_model="", args=None):
         _nous_persist_selection(selected, creds)
         print(f"Default model set to: {selected} (via {tier_row['name']})")
         return
-    model_ids = get_curated_nous_model_ids()
+    # Declared providers.nous.models extend the curated list (deduped, declared-first).
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    model_ids = _with_declared_models(_providers, "nous", get_curated_nous_model_ids())
     if not model_ids:
         print("No curated models available for Nous Portal.")
         return
@@ -939,6 +948,11 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         effective_base = _prompt_base_url_override(effective_base, base_url_env, persist_env=provider_id != "actual")
 
     model_list = _api_key_provider_model_list(provider_id, pconfig, existing_key, key_env, effective_base)
+    # Declared providers.<slug>.models extend the discovered list (deduped, declared-first) —
+    # wrapped at the flow level, the helper itself stays a pure catalog resolver.
+    _providers = config.get("providers") if isinstance(config, dict) else None
+    from hermes_cli.model_switch import _with_declared_models
+    model_list = _with_declared_models(_providers, provider_id, model_list)
     if is_opencode:
         model_list = [normalize_opencode_model_id(provider_id, mid) for mid in model_list]
         current_model = normalize_opencode_model_id(provider_id, current_model)
