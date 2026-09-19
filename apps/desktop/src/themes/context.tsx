@@ -355,7 +355,7 @@ interface ThemeContextValue {
    * pass `publish: false` so the sync never echoes back.
    */
   setTheme: (name: string, opts?: { publish?: boolean }) => void
-  setMode: (next: ThemeMode) => void
+  setMode: (mode: ThemeMode) => void
   /**
    * Paint a theme with an explicit light/dark, without persistence. This is
    * the highlight preview for the palette. A commit (`setTheme`) or

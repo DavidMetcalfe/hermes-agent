@@ -37,12 +37,14 @@ export const DASHBOARD_SHARED_THEMES: Readonly<Record<string, string>> = Object.
   mono: 'mono'
 })
 
-// Last dashboard theme name observed/applied — the sync baseline.
-// A single global value while the sync toggle is per-profile: there is exactly
-// one `dashboard.theme` on the dashboard server, so the baseline tracks the
-// dashboard's value, not any profile's. A per-profile baseline would let one
-// profile's observation go invisible to the others, and each would then paint
-// the same theme again on its next look.
+// Last dashboard theme name observed/applied — the sync baseline. It tracks
+// the `dashboard.theme` value on the backend this desktop app is connected to
+// (the transport is deliberately not profile-scoped, so that is the
+// primary/launch-profile backend — one value per desktop app), not any
+// profile's own preference. Only the profile that observes a change repaints,
+// because the desktop skin itself is intentionally per-profile; making the
+// cross-profile effect uniform is a documented open question on the PR, not
+// something this key settles.
 const BASELINE_KEY = 'hermes-desktop-dashboard-theme-v1'
 
 // Per-profile opt-out. Only the 'off' value is stored, so a profile that never
@@ -65,9 +67,11 @@ export const ingestDashboardTheme = (active: null | string | undefined, { profil
     return
   }
 
-  // Disabled profiles record nothing either — so re-enabling does NOT adopt
-  // the current dashboard theme: the next observation finds no baseline,
-  // seeds it, and paints nothing. Only a subsequent dashboard change paints.
+  // Disabled profiles record nothing, but disabling never touches the
+  // baseline. So a genuine first-ever observation (no baseline: fresh install
+  // or cleared storage) only seeds it and paints nothing, while re-enabling
+  // later — baseline still present — resumes following the dashboard: the
+  // next observation differing from the baseline paints as intended.
   if (!isDashboardSyncEnabled(profile)) {
     return
   }

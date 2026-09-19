@@ -112,18 +112,32 @@ describe('dashboard theme sync', () => {
       expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBeNull()
     })
 
-    it('re-enabling seeds the baseline without adopting; only a later change paints', () => {
-      setDashboardSyncEnabled(profile, false)
-      ingest('midnight') // ignored: disabled
-      setDashboardSyncEnabled(profile, true)
+    it('seeds a fresh install without painting; only a later change paints', () => {
+      ingest('midnight') // no baseline yet — records it, adopts nothing
 
-      ingest('ember') // first observation after re-enabling seeds, never adopts
+      expect($pendingSkinApply.get()).toBeNull()
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('midnight')
+
+      ingest('ember') // the dashboard genuinely moved — now it follows
+
+      expect($pendingSkinApply.get()).toBe('ember')
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('ember')
+    })
+
+    it('re-enabling sync follows the dashboard again', () => {
+      ingest('ember') // baseline seeded while sync is on
+      setDashboardSyncEnabled(profile, false)
+
+      ingest('midnight') // the opt-out must suppress this observation entirely
 
       expect($pendingSkinApply.get()).toBeNull()
       expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('ember')
 
-      ingest('midnight') // adoption needs a dashboard change AFTER re-enabling
+      setDashboardSyncEnabled(profile, true)
+      ingest('midnight') // dashboard moved while we were off → resume following it
+
       expect($pendingSkinApply.get()).toBe('midnight')
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('midnight')
     })
   })
 
@@ -173,6 +187,24 @@ describe('dashboard theme sync', () => {
       await expect(publishDashboardTheme('midnight', { profile })).resolves.toBeUndefined()
 
       expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBeNull()
+    })
+
+    it('pins: a failed publish never causes a later refresh to revert the user pick', async () => {
+      ingest('midnight') // baseline = what the server reports: 'midnight'
+
+      putTheme.mockRejectedValue(new Error('backend down'))
+      await publishDashboardTheme('ember', { profile }) // user's pick — PUT fails
+
+      // The failed PUT must not move the baseline off the server's value...
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('midnight')
+
+      // ...and the next observation of the unchanged server value must be a
+      // no-op, not a silent revert of the user's 'ember' paint.
+      getThemes.mockResolvedValue({ themes: [], active: 'midnight' })
+      await refreshDashboardTheme(profile)
+
+      expect($pendingSkinApply.get()).toBeNull()
+      expect(window.localStorage.getItem('hermes-desktop-dashboard-theme-v1')).toBe('midnight')
     })
   })
 
