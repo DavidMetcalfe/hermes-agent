@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -470,6 +471,30 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);
 
+  // Mirror the live theme name into a ref so async fetch callbacks can
+  // compare against the current value without re-registering their effects
+  // on every theme switch.
+  const themeNameRef = useRef(themeName);
+  useEffect(() => {
+    themeNameRef.current = themeName;
+  }, [themeName]);
+
+  /** Adopt the server's active theme name: run it through the same legacy
+   *  alias migration the initial read uses, move state, and mirror into
+   *  localStorage so a reload doesn't flash the pre-switch palette. Shared
+   *  by the mount fetch and the focus refetch so the two paths cannot
+   *  drift. Deliberately does NOT write back to the server — callers that
+   *  need a migration write decide that themselves; the migrated name is
+   *  returned so they can make that call. */
+  const adoptServerThemeName = useCallback((active: string): string => {
+    const migrated = migrateThemeName(active);
+    if (migrated !== themeNameRef.current) {
+      setThemeName(migrated);
+      window.localStorage.setItem(STORAGE_KEY, migrated);
+    }
+    return migrated;
+  }, []);
+
   // Load server-side themes (built-ins + user YAMLs) once on mount.
   useEffect(() => {
     let cancelled = false;
@@ -496,14 +521,11 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
           if (Object.keys(defs).length > 0) setUserThemeDefs(defs);
         }
         if (resp.active) {
-          const migratedActive = migrateThemeName(resp.active);
-          if (migratedActive !== themeName) {
-            setThemeName(migratedActive);
-            window.localStorage.setItem(STORAGE_KEY, migratedActive);
-          }
+          const migratedActive = adoptServerThemeName(resp.active);
           // If the server is still persisting the stale key, push the
           // migrated value back so it converges too — otherwise every
-          // future page load would re-trigger this branch.
+          // future page load would re-trigger this branch. Migration-only:
+          // the focus refetch below must never write back.
           if (migratedActive !== resp.active) {
             api.setTheme(migratedActive).catch(() => {});
           }
@@ -539,6 +561,42 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Re-fetch the server's active theme when the tab regains focus /
+  // becomes visible again: Desktop (or another tab) may have written
+  // dashboard.theme while this tab sat in the background, and nothing else
+  // refreshes it. Read/apply only — never api.setTheme() here, or a tab
+  // adopting a migrated name would PUT it back and loop with the writer.
+  const refetchInFlight = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    const refetch = () => {
+      if (document.visibilityState !== "visible") return;
+      // Rapid focus/visibility flapping can overlap in-flight requests;
+      // let the in-flight one finish instead of firing a second one.
+      if (refetchInFlight.current) return;
+      refetchInFlight.current = true;
+      api
+        .getThemes()
+        .then((resp) => {
+          if (cancelled) return;
+          if (resp.active) adoptServerThemeName(resp.active);
+        })
+        .catch(() => {})
+        .finally(() => {
+          refetchInFlight.current = false;
+        });
+    };
+    // Both events fire when alt-tabbing back; the in-flight guard keeps the
+    // duplicate from doubling the request.
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", refetch);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", refetch);
+    };
+  }, [adoptServerThemeName]);
 
   const setTheme = useCallback(
     (name: string) => {
