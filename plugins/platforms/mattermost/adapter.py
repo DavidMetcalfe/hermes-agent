@@ -700,9 +700,10 @@ class MattermostAdapter(BasePlatformAdapter):
             thread_id = post_id
         # message_id is the reply anchor (_reply_anchor_for_event) and must be the real reacted-to
         # post id, or a thread-mode reply resolves a bogus root. The reaction-scoped identity lives
-        # on ledger_message_id — the delivery-ledger identity — so two different reactions on the
-        # same post can never share one ledger obligation id when their replies carry the same text.
-        ledger_id = f"reaction-{post_id}-{user_id}-{emoji_name}-{action}"
+        # on ledger_message_id — the delivery-ledger identity, scoped by post, user, emoji, action
+        # and event timestamp — so remove/re-add of the same emoji on one post (or two different
+        # emoji) can never share one ledger obligation id when their replies carry the same text.
+        ledger_id = f"reaction-{post_id}-{user_id}-{emoji_name}-{action}-{event_ts}"
         if chat_type != "dm":  # Parity with the posted path: DMs need no channel gating.
             gated = self._apply_channel_gating(post_channel, text, force_process=True)
             if gated is None:

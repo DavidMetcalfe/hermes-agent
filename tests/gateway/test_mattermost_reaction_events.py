@@ -310,7 +310,7 @@ class TestReactionReplyAnchor:
         msg = adapter.handle_message.await_args[0][0]
         assert msg.message_id == POST
         assert msg.source.message_id == POST
-        assert msg.ledger_message_id == f"reaction-{POST}-{HUMAN}-white_check_mark-added"
+        assert msg.ledger_message_id == f"reaction-{POST}-{HUMAN}-white_check_mark-added-{CREATE_AT}"
 
     @pytest.mark.asyncio
     async def test_ledger_id_differs_per_emoji_while_message_id_stays_the_post(self):
@@ -325,8 +325,8 @@ class TestReactionReplyAnchor:
         ledger_ids = [e.ledger_message_id for e in events]
         assert len(set(ledger_ids)) == 2
         assert ledger_ids == [
-            f"reaction-{POST}-{HUMAN}-white_check_mark-added",
-            f"reaction-{POST}-{HUMAN}-tada-added",
+            f"reaction-{POST}-{HUMAN}-white_check_mark-added-{CREATE_AT}",
+            f"reaction-{POST}-{HUMAN}-tada-added-{CREATE_AT}",
         ]
 
     @pytest.mark.asyncio
@@ -364,6 +364,40 @@ class TestReactionReplyAnchor:
         assert adapter._api_post.await_count == 1  # no flat-fallback re-post
         payload = adapter._api_post.await_args_list[0][0][1]
         assert payload["root_id"] == root_post
+        assert "Mattermost thread delivery failed" not in payload["message"]
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_top_level_post_reply_anchors_on_the_post_itself(self):
+        """The other half of the anchor contract: a reacted-to post with an
+        empty ``root_id`` is itself the thread root, so the resolver must fall
+        back to the post id and the reply must land in that thread — not flat,
+        and not with a bogus root."""
+        from gateway.platforms.base import _reply_anchor_for_event
+        adapter = _reaction_adapter(
+            triggers=["white_check_mark"],
+            posts={POST: {"user_id": HUMAN, "channel_id": CHAN, "root_id": ""}})
+        adapter._reply_mode = "thread"
+        await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        event = adapter.handle_message.await_args[0][0]
+
+        anchor = _reply_anchor_for_event(event)
+        assert anchor == POST
+
+        real_resolve = adapter._resolve_root_id
+        seen = []
+
+        async def spy_resolve(post_id):
+            seen.append(post_id)
+            return await real_resolve(post_id)
+        adapter._resolve_root_id = spy_resolve
+        adapter._api_post = AsyncMock(return_value={"id": "reply_post"})
+
+        result = await adapter.send(CHAN, "hi", reply_to=anchor)
+
+        assert result.success is True
+        assert seen == [POST]
+        payload = adapter._api_post.await_args_list[0][0][1]
+        assert payload["root_id"] == POST
         assert "Mattermost thread delivery failed" not in payload["message"]
 
 
@@ -547,3 +581,80 @@ class TestReactionYamlBridge:
             assert adapter._reaction_triggers() == set()
         finally:
             os.environ.pop("MATTERMOST_REACTION_TRIGGERS", None)
+
+
+# ---------------------------------------------------------------------------
+# Contract 14: post lookup failure is not routed
+# ---------------------------------------------------------------------------
+
+class TestReactionPostLookupFailure:
+    @pytest.mark.asyncio
+    async def test_unfetchable_post_aborts_routing_but_hook_still_fires(self):
+        """A deleted/unfetchable reacted-to post (``posts/{id}`` → empty) gives
+        no author to gate on: routing aborts, but the ungated hook — which
+        fires before the lookup — has already seen the event."""
+        adapter = _reaction_adapter(triggers=["white_check_mark"], posts={})
+        await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        assert f"posts/{POST}" in adapter._api_get.calls  # lookup was attempted
+        assert adapter._reaction_handler.await_count == 1
+        assert not adapter.handle_message.called
+
+
+# ---------------------------------------------------------------------------
+# Contract 15: channel lookup failure degrades to channel-keyed routing
+# ---------------------------------------------------------------------------
+
+class TestReactionChannelLookupFailure:
+    @pytest.mark.asyncio
+    async def test_missing_channel_metadata_still_routes_as_channel(self):
+        """``channels/{id}`` returning {} must not drop the reaction: it routes
+        with the documented fallback — keyed as a regular channel session —
+        so the session key is deterministic rather than lost."""
+        adapter = _reaction_adapter(triggers=["white_check_mark"], channels={})
+        await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        assert f"posts/{POST}" in adapter._api_get.calls
+        assert f"channels/{CHAN}" in adapter._api_get.calls  # lookup attempted, not skipped
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].source.chat_type == "channel"
+
+
+# ---------------------------------------------------------------------------
+# Contract 16: channel_id fallback to the broadcast envelope
+# ---------------------------------------------------------------------------
+
+class TestReactionChannelIdFallback:
+    @pytest.mark.asyncio
+    async def test_reaction_without_channel_id_routes_via_broadcast(self):
+        """A Reaction payload that omits ``channel_id`` must still route: the
+        broadcast envelope carries the channel the event was sent to, so the
+        adapter falls back to it rather than dropping the reaction. (Current
+        servers populate the field on the Reaction object.)"""
+        reaction = {"user_id": HUMAN, "post_id": POST, "emoji_name": "white_check_mark",
+                    "create_at": CREATE_AT}  # no channel_id — falls back to the envelope
+        event = {"event": "reaction_added", "data": {"reaction": json.dumps(reaction)},
+                 "broadcast": {"channel_id": CHAN}}
+        adapter = _reaction_adapter(
+            triggers=["white_check_mark"],
+            posts={POST: {"user_id": BOT, "channel_id": CHAN, "root_id": ""}})
+        await adapter._handle_ws_event(event)
+        assert adapter.handle_message.await_count == 1
+        source = adapter.handle_message.await_args[0][0].source
+        assert source.chat_id == CHAN
+
+
+# ---------------------------------------------------------------------------
+# Contract 17: a raising hook never blocks routing
+# ---------------------------------------------------------------------------
+
+class TestReactionHookFailureIsolation:
+    @pytest.mark.asyncio
+    async def test_raising_hook_does_not_block_routing(self, caplog):
+        """The hook is best-effort: its failure is logged and swallowed so a
+        broken consumer can neither kill routing nor escape into the WS loop."""
+        adapter = _reaction_adapter(triggers=["white_check_mark"])
+        adapter._reaction_handler = AsyncMock(side_effect=RuntimeError("boom"))
+        with caplog.at_level("DEBUG", logger="plugins.platforms.mattermost.adapter"):
+            await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        assert adapter.handle_message.await_count == 1
+        assert any("reaction hook forwarding failed" in rec.getMessage()
+                   for rec in caplog.records)
