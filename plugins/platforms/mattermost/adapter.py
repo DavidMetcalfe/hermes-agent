@@ -637,9 +637,10 @@ class MattermostAdapter(BasePlatformAdapter):
                 reaction = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
                 return
-        elif isinstance(raw, dict):
-            reaction = raw
         else:
+            reaction = raw
+        # Valid JSON that isn't an object ("5", "null", "[]") is malformed input, not a Reaction.
+        if not isinstance(reaction, dict):
             return
         post_id = str(reaction.get("post_id") or "")
         user_id = str(reaction.get("user_id") or "")
@@ -656,9 +657,8 @@ class MattermostAdapter(BasePlatformAdapter):
         event_ts = str(reaction.get("create_at") or "")
         if self._dedup.is_duplicate(f"{post_id}:{user_id}:{emoji_name}:{action}:{event_ts}"):
             return
-        # Hooks fire before the opt-in gate so consumers see every human reaction. getattr: tests
-        # build adapters via object.__new__.
-        reaction_handler = getattr(self, "_reaction_handler", None)
+        # Hooks fire before the opt-in gate so consumers see every human reaction.
+        reaction_handler = self._reaction_handler
         if reaction_handler is not None:
             try:
                 await reaction_handler({
@@ -685,25 +685,36 @@ class MattermostAdapter(BasePlatformAdapter):
         if not explicit_allowlist and author_id != self._bot_user_id:
             return
         # source.chat_type feeds the session key: a DM reaction must land in the DM's session.
-        channel = await self._api_get(f"channels/{post_channel}")
-        chat_type = _CHANNEL_TYPE_MAP.get(str((channel or {}).get("type") or "O"), "channel")
+        channel = await self._api_get(f"channels/{post_channel}") or {}
+        if not channel.get("type"):
+            # Lookup gave no usable type: the session gets keyed as a regular channel.
+            logger.debug("Mattermost: channels/%s returned no usable type; keying reaction as a channel session",
+                         post_channel)
+        chat_type = _CHANNEL_TYPE_MAP.get(str(channel.get("type") or "O"), "channel")
         emoji_text = self._REACTION_EMOJI_MAP.get(emoji_name, emoji_name)
         text = f"reaction:{action}:{emoji_text}"
+        # Thread identity parity with the posted path: in thread mode a top-level channel post is
+        # itself a valid thread root, so the reply lands in the thread session, not the channel one.
         thread_id = root_id or None
-        # Reaction-scoped id: reusing the reacted-to post's id would be swallowed as a duplicate
-        # of the original message or suppress a genuine later reaction on the same post.
-        synthetic_id = f"reaction-{post_id}-{user_id}-{emoji_name}-{action}"
-        gated = self._apply_channel_gating(post_channel, text, force_process=True)
-        if gated is None:
-            return
+        if not thread_id and self._reply_mode == "thread" and chat_type != "dm" and post_id:
+            thread_id = post_id
+        # message_id is the reply anchor (_reply_anchor_for_event) and must be the real reacted-to
+        # post id, or a thread-mode reply resolves a bogus root. The reaction-scoped identity lives
+        # on ledger_message_id — the delivery-ledger identity — so two different reactions on the
+        # same post can never share one ledger obligation id when their replies carry the same text.
+        ledger_id = f"reaction-{post_id}-{user_id}-{emoji_name}-{action}"
+        if chat_type != "dm":  # Parity with the posted path: DMs need no channel gating.
+            gated = self._apply_channel_gating(post_channel, text, force_process=True)
+            if gated is None:
+                return
         source = self.build_source(
             chat_id=post_channel, chat_type=chat_type, user_id=user_id, user_name=user_id,
-            thread_id=thread_id, message_id=synthetic_id)
+            thread_id=thread_id, message_id=post_id)
         from gateway.platforms.base import resolve_channel_prompt
         logger.info("[Mattermost] Routing reaction %s:%s on post %s", action, emoji_name, post_id)
         await self.handle_message(MessageEvent(
             text=text, message_type=MessageType.TEXT, source=source, raw_message=post,
-            message_id=synthetic_id,
+            message_id=post_id, ledger_message_id=ledger_id,
             channel_prompt=resolve_channel_prompt(self.config.extra, post_channel, None)))
 
 
