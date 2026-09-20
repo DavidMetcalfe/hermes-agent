@@ -66,7 +66,7 @@ PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
     # triple-quoted variant (multi-line payload inside a """...""" literal).
     r"SyntaxError: unterminated (?:triple-quoted )?string literal",
     r"unexpected EOF while looking for matching",         # bash/sh wrapper, unmatched quote
-    r"zsh:\d*:? unmatched",                               # zsh's wording for the same failure
+    r"(?:^|\s)zsh:\d*:? unmatched",                       # zsh's wording for the same failure
 )
 
 PAYLOAD_QUOTING_HINT: str = (

@@ -189,6 +189,29 @@ class TestPayloadQuoting:
         assert annotate_failure("sed -e 's/[a-'", 1,
                                 "sed: unmatched brace") is None
 
+    def test_zsh_pattern_left_boundary(self):
+        # Boundary on the `zsh:` prefix itself: the message may follow a
+        # prefix on the same line (`docker: zsh:1: ...`), but a longer token
+        # merely ENDING in 'zsh' is a different program and must not fire.
+        assert annotate_failure("docker run --rm zsh -c 'x'", 1,
+                                "docker: zsh:1: unmatched '") is not None
+        assert annotate_failure("myzsh run.zsh", 1,
+                                "myzsh:1: unmatched '") is None
+        assert annotate_failure("./note_zsh.sh", 1,
+                                "note_zsh:1: unmatched '") is None
+
+    def test_unrelated_syntax_errors_not_flagged(self):
+        # Scope guard for the deliberately broad `invalid character` rule:
+        # real Python compile errors of unrelated cause share the
+        # `SyntaxError:` prefix but are not payload-quoting collisions. If
+        # the pattern were ever broadened to a bare `SyntaxError`, these fail.
+        assert annotate_failure("python3 x.py", 1,
+            '  File "x.py", line 1\n    if x\n       ^\n'
+            "SyntaxError: expected ':'") is None
+        assert annotate_failure("python3 x.py", 1,
+            '  File "x.py", line 1\n    def\n       ^^^\n'
+            "SyntaxError: invalid syntax") is None
+
     def test_unrelated_python_failure_not_flagged(self):
         out = ('Traceback (most recent call last):\n  File "x.py", line 2, in <module>\n'
                "KeyError: 'body'")
