@@ -43,6 +43,28 @@ def _missing_command_hint(missing: str) -> str:
         "or use an absolute path instead of retrying the same command.")
 
 
+# A generated script/command that embeds a natural-language payload in its own
+# source dies when the payload's punctuation collides with the source's quoting
+# (smart quote used as a delimiter, apostrophe closing a literal, apostrophe
+# breaking a single-quoted shell arg). Patterns are public so
+# code_execution_tool shares ONE source of truth; they match only the collision
+# errors themselves, so typographic punctuation inside a correctly delimited
+# literal (which runs fine) never fires.
+PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
+    r"SyntaxError: invalid character",             # smart quote used AS a delimiter
+    r"SyntaxError: unterminated string literal",   # payload apostrophe closed the literal
+    r"unexpected EOF while looking for matching",  # shell wrapper, unmatched quote
+)
+
+PAYLOAD_QUOTING_HINT: str = (
+    "The payload's punctuation is colliding with the quoting of the generated code, so retrying "
+    "the same literal will fail again — stop embedding the payload in the source. Write the "
+    "payload to a file with the write_file tool and pass the file instead: `gh ... "
+    "--body-file <file>`, `gh api -F body=@<file>`, or in Python `open(path).read()`; "
+    "or choose a delimiter the payload cannot contain."
+)
+
+
 # Ordered by production frequency — first match wins.
 _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     # gh version drift; gh already prints the valid field list.
@@ -69,6 +91,9 @@ _OUTPUT_HINTS: list[Callable[[str, str], Optional[str]]] = [
     _regex_hint(r"Permission denied|EACCES",
                 "Permission denied. Check ownership/mode of the target path (`ls -la`); prefer a "
                 "user-writable location. Only escalate to sudo if the task genuinely requires it."),
+    # Payload-quoting collision in generated code — one entry built from the
+    # shared public patterns so code_execution_tool keeps ONE source of truth.
+    _regex_hint("(?:" + "|".join(PAYLOAD_QUOTING_PATTERNS) + ")", PAYLOAD_QUOTING_HINT),
 ]
 
 # Exit-code-only hints for codes the terminal_tool semantics table does not

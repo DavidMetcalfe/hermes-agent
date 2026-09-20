@@ -90,6 +90,53 @@ class TestPermissionDenied:
         assert "Permission denied" in hint
 
 
+class TestPayloadQuoting:
+    """Generated code embedding a natural-language payload whose punctuation
+    collides with the source's own quoting (issue #47630)."""
+
+    # The issue's acceptance criterion: a realistic gh-issue-body payload with
+    # an em dash, smart quotes and an apostrophe must get the file-handoff hint.
+    def test_github_body_payload_names_file_handoff(self):
+        out = (
+            '  File "post_issue.py", line 1\n'
+            '    body = \'Reporting — the “new” field isn\'t saving\'\n'
+            "                                                                      ^\n"
+            "SyntaxError: unterminated string literal (detected at line 1)\n"
+        )
+        hint = annotate_failure("python3 post_issue.py", 1, out)
+        assert hint is not None
+        # Names the file handoff concretely, not a retry of the same literal.
+        assert "write_file" in hint
+        assert "--body-file" in hint
+        assert "gh api -F body=@<file>" in hint
+        assert "open(path).read()" in hint
+
+    def test_smart_quote_used_as_delimiter(self):
+        out = ('  File "<string>", line 1\n'
+               "    x = “hello”\n"
+               "        ^ \n"
+               "SyntaxError: invalid character '“' (U+201C)")
+        hint = annotate_failure("python3 -c 'x = “hello”'", 1, out)
+        assert hint is not None
+        assert "--body-file" in hint
+
+    def test_shell_unmatched_quote(self):
+        out = ("sh: -c: line 0: unexpected EOF while looking for matching `''\n"
+               "sh: -c: line 1: syntax error: unexpected end of file")
+        hint = annotate_failure("sh -c \"gh issue comment 1 --body 'It isn't broken'\"", 2, out)
+        assert hint is not None
+        assert "write_file" in hint
+
+    def test_unrelated_python_failure_not_flagged(self):
+        out = ('Traceback (most recent call last):\n  File "x.py", line 2, in <module>\n'
+               "KeyError: 'body'")
+        assert annotate_failure("python3 x.py", 1, out) is None
+
+    def test_unrelated_shell_failure_not_flagged(self):
+        assert annotate_failure("ls /no/such/dir", 1,
+                                "ls: /no/such/dir: No such file or directory") is None
+
+
 class TestBoundedScan:
     def test_pattern_beyond_scan_window_ignored(self):
         out = "x" * 5000 + "\npython: command not found"
