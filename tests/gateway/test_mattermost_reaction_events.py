@@ -5,9 +5,10 @@ WebSocket with ``data["reaction"]`` as a JSON-encoded string of a Reaction
 object. These tests lock the adapter's behaviour contracts: the hook is
 ungated and shaped, agent routing is opt-in (boolean = bot's own posts only,
 list = emoji allowlist on any post), self-reactions and malformed payloads are
-inert, redeliveries dedup, routed events carry a reaction-scoped message id,
-channel gating parity holds, and DM/thread session continuity resolves
-through the reacted-to post.
+inert, redeliveries dedup, routed events anchor replies on the reacted-to post
+while carrying a reaction-scoped delivery-ledger id, channel gating parity
+holds (DMs ungated), and DM/thread session continuity resolves through the
+reacted-to post.
 """
 import json
 import os
@@ -248,6 +249,9 @@ class TestReactionMalformedInput:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("event", [
         pytest.param(_reaction_event(raw="not json"), id="not-json"),
+        pytest.param(_reaction_event(raw="5"), id="json-int"),
+        pytest.param(_reaction_event(raw="null"), id="json-null"),
+        pytest.param(_reaction_event(raw="[]"), id="json-list"),
         pytest.param({"event": "reaction_added", "data": {},
                       "broadcast": {"channel_id": CHAN}}, id="missing-reaction-key"),
         pytest.param(_reaction_event(raw=json.dumps({})), id="empty-reaction"),
@@ -291,20 +295,76 @@ class TestReactionRedeliveryDedup:
 
 
 # ---------------------------------------------------------------------------
-# Contract 9: reaction-scoped message id
+# Contract 9: reply anchor = reacted-to post id; ledger identity = reaction-scoped
 # ---------------------------------------------------------------------------
 
-class TestReactionScopedMessageId:
+class TestReactionReplyAnchor:
     @pytest.mark.asyncio
-    async def test_message_id_is_not_the_reacted_to_post_id(self):
-        """Reusing the reacted-to post's id would let the gateway's message-id
-        dedup conflate the reaction with the reacted-to message."""
+    async def test_message_id_is_the_reacted_to_post_id(self):
+        """``message_id`` is the reply anchor (``_reply_anchor_for_event``), so
+        it must be the real reacted-to post id — a synthetic id resolves to a
+        bogus thread root and breaks threaded replies. The reaction-scoped
+        identity rides on ``ledger_message_id`` instead."""
         adapter = _reaction_adapter(triggers=["white_check_mark"])
         await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
         msg = adapter.handle_message.await_args[0][0]
-        assert msg.message_id != POST
-        assert msg.source.message_id != POST
-        assert msg.message_id == msg.source.message_id
+        assert msg.message_id == POST
+        assert msg.source.message_id == POST
+        assert msg.ledger_message_id == f"reaction-{POST}-{HUMAN}-white_check_mark-added"
+
+    @pytest.mark.asyncio
+    async def test_ledger_id_differs_per_emoji_while_message_id_stays_the_post(self):
+        """Two different emoji on one post share the reply anchor (the post id)
+        but must never collide on one delivery-ledger obligation id."""
+        adapter = _reaction_adapter(triggers=["white_check_mark", "tada"])
+        await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        await adapter._handle_ws_event(_reaction_event(emoji="tada"))
+        events = [c[0][0] for c in adapter.handle_message.await_args_list]
+        assert [e.message_id for e in events] == [POST, POST]
+        assert [e.source.message_id for e in events] == [POST, POST]
+        ledger_ids = [e.ledger_message_id for e in events]
+        assert len(set(ledger_ids)) == 2
+        assert ledger_ids == [
+            f"reaction-{POST}-{HUMAN}-white_check_mark-added",
+            f"reaction-{POST}-{HUMAN}-tada-added",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_reply_anchors_on_the_real_post(self):
+        """C1 regression: drive the real send path with the routed event's
+        reply anchor and prove the bogus ``reaction-…`` id never reaches
+        ``_resolve_root_id`` or the POST payload as root_id."""
+        from gateway.platforms.base import _reply_anchor_for_event
+        root_post = "root_post"
+        adapter = _reaction_adapter(
+            triggers=["white_check_mark"],
+            posts={POST: {"user_id": HUMAN, "channel_id": CHAN, "root_id": root_post}})
+        adapter._reply_mode = "thread"
+        await adapter._handle_ws_event(_reaction_event(emoji="white_check_mark"))
+        event = adapter.handle_message.await_args[0][0]
+
+        anchor = _reply_anchor_for_event(event)
+        assert anchor == POST
+
+        # Spy on the resolver while it still runs for real against the fake API.
+        real_resolve = adapter._resolve_root_id
+        seen = []
+
+        async def spy_resolve(post_id):
+            seen.append(post_id)
+            return await real_resolve(post_id)
+        adapter._resolve_root_id = spy_resolve
+        adapter._api_post = AsyncMock(return_value={"id": "reply_post"})
+
+        result = await adapter.send(CHAN, "hi", reply_to=anchor)
+
+        assert result.success is True
+        assert seen == [POST]
+        assert all(not s.startswith("reaction-") for s in seen)
+        assert adapter._api_post.await_count == 1  # no flat-fallback re-post
+        payload = adapter._api_post.await_args_list[0][0][1]
+        assert payload["root_id"] == root_post
+        assert "Mattermost thread delivery failed" not in payload["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -328,6 +388,20 @@ class TestReactionGateParity:
         adapter = _reaction_adapter(triggers=["white_check_mark"])
         await adapter._handle_ws_event(_reaction_event())
         assert not adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_allowed_channels_does_not_block_dm_reaction(self, monkeypatch):
+        """Parity with typed DM messages: an allowed_channels whitelist is a
+        set of channel IDs that can never contain a DM channel id, so DM
+        reactions must skip the gate like DM messages do."""
+        monkeypatch.setenv("MATTERMOST_ALLOWED_CHANNELS", "chan_something_else")
+        adapter = _reaction_adapter(
+            triggers=["white_check_mark"],
+            posts={POST: {"user_id": HUMAN, "channel_id": "chan_dm", "root_id": ""}},
+            channels={"chan_dm": {"type": "D"}})
+        await adapter._handle_ws_event(_reaction_event(channel="chan_dm"))
+        assert adapter.handle_message.await_count == 1
+        assert adapter.handle_message.await_args[0][0].source.chat_type == "dm"
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +431,41 @@ class TestReactionSessionContinuity:
         assert adapter.handle_message.await_count == 1
         msg = adapter.handle_message.await_args[0][0]
         assert msg.source.thread_id == "root_9"
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_top_level_post_reaction_gets_own_thread_id(self):
+        """Parity with the posted path: in thread mode a reaction on a
+        top-level channel post keys the thread session (thread_id = post_id),
+        where the bot's threaded answer actually lives."""
+        adapter = _reaction_adapter(triggers=["white_check_mark"])
+        adapter._reply_mode = "thread"
+        await adapter._handle_ws_event(_reaction_event())
+        assert adapter.handle_message.await_count == 1
+        msg = adapter.handle_message.await_args[0][0]
+        assert msg.source.thread_id == POST
+
+    @pytest.mark.asyncio
+    async def test_thread_mode_dm_reaction_keeps_channel_level_session(self):
+        """DMs have no thread roots — a DM reaction must NOT be promoted to a
+        post_id thread session (mirrors the posted path's DM exclusion)."""
+        adapter = _reaction_adapter(
+            triggers=["white_check_mark"],
+            posts={POST: {"user_id": HUMAN, "channel_id": "chan_dm", "root_id": ""}},
+            channels={"chan_dm": {"type": "D"}})
+        adapter._reply_mode = "thread"
+        await adapter._handle_ws_event(_reaction_event(channel="chan_dm"))
+        assert adapter.handle_message.await_count == 1
+        msg = adapter.handle_message.await_args[0][0]
+        assert msg.source.chat_type == "dm"
+        assert msg.source.thread_id is None
+
+    @pytest.mark.asyncio
+    async def test_flat_reply_mode_top_level_post_reaction_stays_channel_level(self):
+        """Without thread mode the reaction keys the channel-level session."""
+        adapter = _reaction_adapter(triggers=["white_check_mark"])
+        await adapter._handle_ws_event(_reaction_event())
+        msg = adapter.handle_message.await_args[0][0]
+        assert msg.source.thread_id is None
 
 
 # ---------------------------------------------------------------------------
