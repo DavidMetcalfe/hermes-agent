@@ -158,7 +158,7 @@ describe('configured providers with an undiscovered catalog', () => {
 
     expect(screen.getByText('my-provider')).toBeTruthy()
 
-    const hint = screen.getByText('No models discovered yet — use Refresh models')
+    const hint = screen.getByText('No models discovered yet')
     expect(hint.closest('[role="menuitem"]')?.getAttribute('aria-disabled')).toBe('true')
   })
 
@@ -189,7 +189,7 @@ describe('configured providers with an undiscovered catalog', () => {
 
     await vi.waitFor(() => {
       expect(screen.queryByText('my-provider')).toBeNull()
-      expect(screen.queryByText('No models discovered yet — use Refresh models')).toBeNull()
+      expect(screen.queryByText('No models discovered yet')).toBeNull()
     })
   })
 })

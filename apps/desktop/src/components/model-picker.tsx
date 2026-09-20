@@ -1,4 +1,4 @@
-import type { ModelOptionProvider, ModelOptionsResult, ModelPricing } from '@hermes/shared'
+import type { ModelOptionProvider, ModelPricing } from '@hermes/shared'
 import { fuzzyRank, modelSearchText } from '@hermes/shared'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useMemo, useState } from 'react'
@@ -9,6 +9,7 @@ import {
   catalogProviderMatches,
   isUndiscoveredConfiguredProvider,
   modelOptionsQueryKey,
+  refreshModelOptions,
   requestModelOptions
 } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
@@ -199,15 +200,7 @@ export function ModelPickerDialog({
     setRefreshing(true)
 
     try {
-      const queryKey = modelOptionsQueryKey(profile, sessionId, ownerConnectionId)
-
-      const next = await requestModelOptions({ gateway: gw, profile, refresh: true, request, sessionId })
-
-      queryClient.setQueryData<ModelOptionsResult>(queryKey, next)
-    } catch {
-      // Network/backend hiccup — fall back to a plain invalidate so the next
-      // open re-fetches (still cached, but no worse than before).
-      void queryClient.invalidateQueries({ queryKey: ['model-options'] })
+      await refreshModelOptions(queryClient, { gateway: gw, ownerConnectionId, profile, request, sessionId })
     } finally {
       setRefreshing(false)
     }
@@ -346,9 +339,12 @@ function ModelResults({
         // A configured provider whose catalog hasn't been fetched yet stays
         // visible as a heading plus one disabled hint row rather than
         // vanishing from the picker (#49656). Built-in skeleton rows (not
-        // user-defined) stay hidden.
+        // user-defined) stay hidden. A query means "show me matches" — like
+        // the composer menu, the hint group hides while searching.
+        const searching = search.trim().length > 0
+
         const undiscovered =
-          models.length === 0 && groupDownloads.length === 0 && isUndiscoveredConfiguredProvider(provider)
+          !searching && models.length === 0 && groupDownloads.length === 0 && isUndiscoveredConfiguredProvider(provider)
 
         if (models.length === 0 && groupDownloads.length === 0 && !undiscovered) {
           return null
