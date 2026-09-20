@@ -51,9 +51,12 @@ def _missing_command_hint(missing: str) -> str:
 # errors themselves, so typographic punctuation inside a correctly delimited
 # literal (which runs fine) never fires.
 PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
-    r"SyntaxError: invalid character",             # smart quote used AS a delimiter
-    r"SyntaxError: unterminated string literal",   # payload apostrophe closed the literal
-    r"unexpected EOF while looking for matching",  # shell wrapper, unmatched quote
+    r"SyntaxError: invalid character",                    # smart quote used AS a delimiter
+    # payload apostrophe closed the literal; the optional group covers the
+    # triple-quoted variant (multi-line payload inside a """...""" literal).
+    r"SyntaxError: unterminated (?:triple-quoted )?string literal",
+    r"unexpected EOF while looking for matching",         # bash/sh wrapper, unmatched quote
+    r"zsh:\d*:? unmatched",                               # zsh's wording for the same failure
 )
 
 PAYLOAD_QUOTING_HINT: str = (

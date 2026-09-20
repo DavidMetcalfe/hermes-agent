@@ -127,6 +127,34 @@ class TestPayloadQuoting:
         assert hint is not None
         assert "write_file" in hint
 
+    def test_triple_quoted_unterminated_literal(self):
+        # Multi-line gh body inside a """...""" literal: 'triple-quoted' is
+        # interposed, so the plain-literal pattern alone misses this.
+        out = ('  File "post_issue.py", line 1\n'
+               '    body = """unterminated\n'
+               "             ^\n"
+               "SyntaxError: unterminated triple-quoted string literal (detected at line 1)\n")
+        hint = annotate_failure("python3 post_issue.py", 1, out)
+        assert hint is not None
+        assert "write_file" in hint
+        assert "--body-file" in hint
+
+    def test_zsh_unmatched_quote(self):
+        # zsh words the same failure differently from bash/sh.
+        out = "zsh:1: unmatched '"
+        hint = annotate_failure(
+            'zsh -c "gh issue comment 1 --body \'It isn\'t broken\'"', 1, out)
+        assert hint is not None
+        assert "write_file" in hint
+
+    def test_bare_unmatched_word_not_flagged(self):
+        # The zsh pattern must be anchored to the `zsh:` error prefix — an
+        # unrelated tool printing 'unmatched' must not fire the hint.
+        assert annotate_failure("grep foo bar.txt", 1,
+                                "grep: unmatched something") is None
+        assert annotate_failure("sed -e 's/[a-'", 1,
+                                "sed: unmatched brace") is None
+
     def test_unrelated_python_failure_not_flagged(self):
         out = ('Traceback (most recent call last):\n  File "x.py", line 2, in <module>\n'
                "KeyError: 'body'")
