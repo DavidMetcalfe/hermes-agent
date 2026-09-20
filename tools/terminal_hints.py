@@ -44,17 +44,19 @@ def _missing_command_hint(missing: str) -> str:
 
 
 # A generated script/command that embeds a natural-language payload in its own
-# source dies when a character lands where the source expects code: a
-# character that cannot appear in code position (a typographic delimiter such
-# as a smart quote, guillemet, prime or middot), or a payload quote closing
-# the literal that carries it (also breaking a single-quoted shell arg).
+# source dies when a character lands where the source expects code: typographic
+# punctuation that cannot stand in code position — a smart quote or guillemet
+# used as a delimiter, or a middot / em dash / prime / acute standing where an
+# operator or literal belongs — or a payload quote closing the literal that
+# carries it (also breaking a single-quoted shell arg).
 # Patterns are public so code_execution_tool shares ONE source of truth; they
 # match only the collision errors themselves, so typographic punctuation
 # inside a correctly delimited literal (which runs fine) never fires.
-# The `invalid character` pattern is intentionally broad, NOT quote-only: the
-# same message is produced by every typographic delimiter a payload may use
-# (guillemets, low-9 quotes, fullwidth quote, prime, acute, middot, em dash),
-# so narrowing it to “”‘’ would false-negative across the bug class.
+# The `invalid character` pattern is intentionally broad, NOT quote-only: every
+# typographic punctuation mark a payload may use (guillemets, low-9 quotes,
+# fullwidth quote, prime, acute, middot, em dash) produces the same
+# `invalid character '<ch>' (U+XXXX)` message, so narrowing it to “”‘’ would
+# false-negative across the bug class.
 # Invisible characters (NBSP, ZWSP) produce a DIFFERENT message —
 # `invalid non-printable character U+XXXX` — a different cause with a
 # different remedy, which these patterns must NOT match.
@@ -68,12 +70,12 @@ PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
 )
 
 PAYLOAD_QUOTING_HINT: str = (
-    "The generated source has punctuation that cannot appear in code position "
-    "(a typographic delimiter, or a payload quote closing the literal that "
-    "carries it), so retrying the same literal will fail again. Write the "
-    "payload to a file with write_file and pass the file — `gh ... "
-    "--body-file <file>`, `gh api -F body=@<file>`, or `open(path).read()` — "
-    "or fix the character and pick a delimiter the payload cannot contain."
+    "The generated source contains a character that cannot appear in code position — "
+    "typographic punctuation, or a payload quote closing the literal that carries it — "
+    "so the same source will fail again. Leave the payload text alone and either write it "
+    "to a file with write_file and pass the file (`gh ... --body-file <file>`, "
+    "`gh api -F body=@<file>`, `open(path).read()`), or replace the offending character "
+    "in your source and pick a delimiter the payload cannot contain."
 )
 
 

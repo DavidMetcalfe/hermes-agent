@@ -105,11 +105,14 @@ class TestPayloadQuoting:
         )
         hint = annotate_failure("python3 post_issue.py", 1, out)
         assert hint is not None
-        # Names the file handoff concretely, not a retry of the same literal.
+        # Names the file handoff concretely, not a retry of the same source.
         assert "write_file" in hint
         assert "--body-file" in hint
         assert "gh api -F body=@<file>" in hint
         assert "open(path).read()" in hint
+        # Product invariant: Hermes must never normalize or rewrite the user's
+        # payload, so the hint must not read as permission to edit it.
+        assert "Leave the payload text alone" in hint
 
     def test_smart_quote_used_as_delimiter(self):
         out = ('  File "<string>", line 1\n'
@@ -122,8 +125,11 @@ class TestPayloadQuoting:
 
     def test_non_quote_typographic_character_fires_hint(self):
         # This test exists to block a future "narrow it to quote characters"
-        # change: Python emits the same `invalid character '<ch>' (U+XXXX)`
-        # message for every typographic delimiter a payload may use
+        # change: these are typographic punctuation marks that cannot stand in
+        # code position — a smart quote or guillemet used as a delimiter, or a
+        # middot / em dash / prime / acute standing where an operator or
+        # literal belongs — and Python emits the same
+        # `invalid character '<ch>' (U+XXXX)` message for every one of them
         # (guillemets, low-9 quotes, fullwidth quote, prime, acute, middot),
         # so the pattern must stay broad. Captured on Python 3.14:
         # a middot in code position (source `x = · 5`) yields exactly this.
