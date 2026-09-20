@@ -113,12 +113,37 @@ class TestPayloadQuoting:
 
     def test_smart_quote_used_as_delimiter(self):
         out = ('  File "<string>", line 1\n'
-               "    x = “hello”\n"
-               "        ^ \n"
+               "    x = “hello”\n"
+               "        ^ \n"
                "SyntaxError: invalid character '“' (U+201C)")
         hint = annotate_failure("python3 -c 'x = “hello”'", 1, out)
         assert hint is not None
         assert "--body-file" in hint
+
+    def test_non_quote_typographic_character_fires_hint(self):
+        # This test exists to block a future "narrow it to quote characters"
+        # change: Python emits the same `invalid character '<ch>' (U+XXXX)`
+        # message for every typographic delimiter a payload may use
+        # (guillemets, low-9 quotes, fullwidth quote, prime, acute, middot),
+        # so the pattern must stay broad. Captured on Python 3.14:
+        # a middot in code position (source `x = · 5`) yields exactly this.
+        out = ("  File \"<string>\", line 1\n"
+               "    x = · 5\n"
+               "        ^\n"
+               "SyntaxError: invalid character '·' (U+00B7)")
+        hint = annotate_failure("python3 -c 'x = · 5'", 1, out)
+        assert hint is not None
+        assert "--body-file" in hint
+
+    def test_non_printable_character_not_flagged(self):
+        # Boundary of the class: invisible characters produce a DIFFERENT
+        # captured message — `SyntaxError: invalid non-printable character
+        # U+00A0` (NBSP) / `... U+200B` (ZWSP) — a different cause with a
+        # different remedy, so the payload-quoting hint must not fire.
+        assert annotate_failure("python3 -c 'x = \u00a0 5'", 1,
+            "SyntaxError: invalid non-printable character U+00A0") is None
+        assert annotate_failure("python3 -c 'x = \u200b5'", 1,
+            "SyntaxError: invalid non-printable character U+200B") is None
 
     def test_shell_unmatched_quote(self):
         out = ("sh: -c: line 0: unexpected EOF while looking for matching `''\n"

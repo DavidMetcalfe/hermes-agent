@@ -44,14 +44,22 @@ def _missing_command_hint(missing: str) -> str:
 
 
 # A generated script/command that embeds a natural-language payload in its own
-# source dies when the payload's punctuation collides with the source's quoting
-# (smart quote used as a delimiter, apostrophe closing a literal, apostrophe
-# breaking a single-quoted shell arg). Patterns are public so
-# code_execution_tool shares ONE source of truth; they match only the collision
-# errors themselves, so typographic punctuation inside a correctly delimited
-# literal (which runs fine) never fires.
+# source dies when a character lands where the source expects code: a
+# character that cannot appear in code position (a typographic delimiter such
+# as a smart quote, guillemet, prime or middot), or a payload quote closing
+# the literal that carries it (also breaking a single-quoted shell arg).
+# Patterns are public so code_execution_tool shares ONE source of truth; they
+# match only the collision errors themselves, so typographic punctuation
+# inside a correctly delimited literal (which runs fine) never fires.
+# The `invalid character` pattern is intentionally broad, NOT quote-only: the
+# same message is produced by every typographic delimiter a payload may use
+# (guillemets, low-9 quotes, fullwidth quote, prime, acute, middot, em dash),
+# so narrowing it to “”‘’ would false-negative across the bug class.
+# Invisible characters (NBSP, ZWSP) produce a DIFFERENT message —
+# `invalid non-printable character U+XXXX` — a different cause with a
+# different remedy, which these patterns must NOT match.
 PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
-    r"SyntaxError: invalid character",                    # smart quote used AS a delimiter
+    r"SyntaxError: invalid character",
     # payload apostrophe closed the literal; the optional group covers the
     # triple-quoted variant (multi-line payload inside a """...""" literal).
     r"SyntaxError: unterminated (?:triple-quoted )?string literal",
@@ -60,11 +68,12 @@ PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
 )
 
 PAYLOAD_QUOTING_HINT: str = (
-    "The payload's punctuation is colliding with the quoting of the generated code, so retrying "
-    "the same literal will fail again — stop embedding the payload in the source. Write the "
-    "payload to a file with the write_file tool and pass the file instead: `gh ... "
-    "--body-file <file>`, `gh api -F body=@<file>`, or in Python `open(path).read()`; "
-    "or choose a delimiter the payload cannot contain."
+    "The generated source has punctuation that cannot appear in code position "
+    "(a typographic delimiter, or a payload quote closing the literal that "
+    "carries it), so retrying the same literal will fail again. Write the "
+    "payload to a file with write_file and pass the file — `gh ... "
+    "--body-file <file>`, `gh api -F body=@<file>`, or `open(path).read()` — "
+    "or fix the character and pick a delimiter the payload cannot contain."
 )
 
 

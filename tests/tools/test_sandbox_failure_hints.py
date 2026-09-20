@@ -79,8 +79,7 @@ class TestPayloadQuotingHint:
             '  File "<execute_code>", line 4, in <module>\n'
             "    subprocess.run(['gh', 'issue', 'create', '--title', 'Bug', '--body',\n"
             "      'The user\\'s “repro” steps — which we can’t reproduce — fail on macOS.'])\n"
-            "  File \"/usr/lib/python3.11/subprocess.py\", line 548, in run\n"
-            "    with Popen(*popenargs, **kwargs) as process:\n"
+            "      ^\n"
             "SyntaxError: unterminated string literal (detected at line 4)"
         )
         assert _sandbox_failure_hint(err) == PAYLOAD_QUOTING_HINT
