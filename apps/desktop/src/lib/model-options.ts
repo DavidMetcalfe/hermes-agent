@@ -18,6 +18,13 @@ export function catalogProviderMatches(provider: CatalogProviderIdentity, curren
   )
 }
 
+/** A provider the user configured whose model catalog has not been discovered
+ *  yet: the backend emits a user-defined row with an empty model list. Pickers
+ *  keep it visible so a configured provider is never silently absent (#49656). */
+export function isUndiscoveredConfiguredProvider(provider: ModelOptionProvider): boolean {
+  return provider.is_user_defined === true && (provider.models?.length ?? 0) === 0
+}
+
 /** The catalog's option support for the current pick, or undefined while the
  *  catalog is loading / doesn't say. Callers treat undefined as "assume
  *  reasoning" so controls never flicker away during the fetch. */

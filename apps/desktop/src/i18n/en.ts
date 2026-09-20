@@ -3605,6 +3605,7 @@ export const en: Translations = {
     modelMenu: {
       search: 'Search models',
       noModels: 'No models found',
+      noModelsDiscovered: 'No models discovered yet — use Refresh models',
       editModels: 'Edit models…',
       refreshModels: 'Refresh models',
       fast: 'Fast'
