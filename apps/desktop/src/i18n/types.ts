@@ -3107,6 +3107,8 @@ export interface Translations {
     freeTier: string
     priceTitle: string
     wasPrice: string
+    noModelsDiscovered: string
+    refreshModels: string
   }
 
   modelVisibility: {

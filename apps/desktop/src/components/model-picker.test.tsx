@@ -204,3 +204,62 @@ describe('ModelPickerDialog search ranking', () => {
     })
   })
 })
+
+describe('ModelPickerDialog undiscovered configured providers', () => {
+  // #49656: a provider configured under custom_providers: arrives as a
+  // user-defined row with an empty model list until its /v1/models catalog is
+  // fetched. The picker must keep it visible with a hint row, not drop it.
+  it('keeps a user-defined provider with an empty catalog visible with a hint row', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [
+        {
+          slug: 'custom:my-provider',
+          name: 'my-provider',
+          is_user_defined: true,
+          authenticated: true,
+          models: []
+        }
+      ]
+    })
+    renderPicker()
+
+    expect(await screen.findByText('my-provider')).toBeTruthy()
+
+    const hint = screen.getByText('No models discovered yet')
+
+    // Non-selectable: cmdk marks the item unselectable (no onSelect path).
+    expect(hint.closest('[cmdk-item]')?.getAttribute('aria-disabled')).toBe('true')
+  })
+
+  it('hides an empty provider the user did not configure', async () => {
+    vi.mocked(requestModelOptions).mockResolvedValue({
+      providers: [{ slug: 'canonical', name: 'Some Canonical', models: [] }]
+    })
+    renderPicker()
+
+    // Wait until the payload has rendered: with nothing selectable left,
+    // cmdk shows its empty state.
+    await screen.findByText('No models found.')
+
+    expect(screen.queryByText('Some Canonical')).toBeNull()
+    expect(screen.queryByText('No models discovered yet')).toBeNull()
+  })
+
+  it('refreshes the whole catalog from the footer button', async () => {
+    renderPicker()
+    await screen.findByText('Hermes-4.5')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh models' }))
+
+    await waitFor(() => {
+      expect(vi.mocked(requestModelOptions)).toHaveBeenCalledWith(expect.objectContaining({ refresh: true }))
+    })
+  })
+
+  it('renders no hint row for providers whose catalog has models', async () => {
+    renderPicker()
+
+    expect(await screen.findByText('Hermes-4.5')).toBeTruthy()
+    expect(screen.queryByText('No models discovered yet')).toBeNull()
+  })
+})
