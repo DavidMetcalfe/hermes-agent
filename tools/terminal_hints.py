@@ -72,10 +72,10 @@ PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
 PAYLOAD_QUOTING_HINT: str = (
     "The generated source contains a character that cannot appear in code position — "
     "typographic punctuation, or a payload quote closing the literal that carries it — "
-    "so the same source will fail again. Leave the payload text alone and either write it "
-    "to a file with write_file and pass the file (`gh ... --body-file <file>`, "
-    "`gh api -F body=@<file>`, `open(path).read()`), or replace the offending character "
-    "in your source and pick a delimiter the payload cannot contain."
+    "so the same source will fail again. Leave the payload text alone: write it to a file "
+    "with write_file and pass the file (`gh ... --body-file <file>`, "
+    "`gh api -F body=@<file>`, `open(path).read()`); a character that is merely stray in "
+    "the generated code may be swapped for ASCII."
 )
 
 
