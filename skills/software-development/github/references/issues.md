@@ -95,20 +95,15 @@ for i in json.load(sys.stdin)['items']:
 
 **With gh:**
 
+Write the body to a file first — with the **write_file tool**, not with echo/heredoc
+inside a shell string — then hand it to gh as a file:
+
 ```bash
+# /tmp/issue-body.md holds the Markdown body (## Description, ## Steps to
+# Reproduce, ## Expected Behavior, ...)
 gh issue create \
   --title "Login redirect ignores ?next= parameter" \
-  --body "## Description
-After logging in, users always land on /dashboard.
-
-## Steps to Reproduce
-1. Navigate to /settings while logged out
-2. Get redirected to /login?next=/settings
-3. Log in
-4. Actual: redirected to /dashboard (should go to /settings)
-
-## Expected Behavior
-Respect the ?next= query parameter." \
+  --body-file /tmp/issue-body.md \
   --label "bug,backend" \
   --assignee "username"
 ```
@@ -126,6 +121,20 @@ curl -s -X POST \
     "assignees": ["username"]
   }'
 ```
+
+### Long bodies: hand off via a file
+
+Any long natural-language body embedded inline in generated source — `--body "..."`,
+inline Python, a shell wrapper — risks the payload's punctuation colliding with the
+script's or shell's own quoting: an apostrophe closes a single-quoted literal
+(`SyntaxError: unterminated string literal`) or a shell quote (`unexpected EOF while
+looking for matching '`), and the action dies before it runs. The rule: write the body
+to a file with write_file, then pass the file — `gh issue create --body-file <file>`,
+`gh pr create --body-file <file>`, or `gh api -F body=@<file>` (`-` reads stdin). Never
+ASCII-normalize the payload: typographic punctuation (apostrophes, smart quotes, em
+dashes) is legitimate content — moving it out of the source *is* the fix. Acceptable
+inline fallback when a file isn't practical: the quoted-heredoc form
+`--body "$(cat <<'EOF' ... EOF)"` (see `code-review.md`).
 
 ### Bug Report Template
 
@@ -224,6 +233,9 @@ curl -s -X POST \
 ```bash
 gh issue comment 42 --body "Investigated — root cause is in auth middleware. Working on a fix."
 ```
+
+Short one-line bodies like this are fine inline; for anything longer, hand the body off
+via a file (see "Long bodies: hand off via a file" above).
 
 **With curl:**
 
