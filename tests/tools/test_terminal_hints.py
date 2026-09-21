@@ -173,6 +173,28 @@ class TestPayloadQuoting:
         assert "write_file" in hint
         assert "--body-file" in hint
 
+    def test_pre_310_unterminated_literal_wording(self):
+        # Python 3.9 and earlier word the same two failures differently — both
+        # messages captured verbatim on 3.9.6 (`body = 'Reporting` and an
+        # unterminated """...""" literal). They are specific to an unterminated
+        # literal, so they carry the same remedy; the nested-apostrophe payload
+        # on 3.9.6 is the generic `SyntaxError: invalid syntax` that
+        # test_unrelated_syntax_errors_not_flagged pins as deliberately unhinted.
+        hint = annotate_failure("python3 post_issue.py", 1,
+            '  File "post_issue.py", line 1\n'
+            "    body = 'Reporting\n"
+            "                     ^\n"
+            "SyntaxError: EOL while scanning string literal\n")
+        assert hint is not None
+        assert "--body-file" in hint
+        hint = annotate_failure("python3 post_issue.py", 1,
+            '  File "post_issue.py", line 3\n'
+            '    body = """Reporting — the new field isn\'t saving\n'
+            "                                                      ^\n"
+            "SyntaxError: EOF while scanning triple-quoted string literal\n")
+        assert hint is not None
+        assert "write_file" in hint
+
     def test_zsh_unmatched_quote(self):
         # zsh words the same failure differently from bash/sh.
         out = "zsh:1: unmatched '"
@@ -205,6 +227,10 @@ class TestPayloadQuoting:
         # real Python compile errors of unrelated cause share the
         # `SyntaxError:` prefix but are not payload-quoting collisions. If
         # the pattern were ever broadened to a bare `SyntaxError`, these fail.
+        # `invalid syntax` is also what Python 3.9.6 reports for a payload
+        # apostrophe that leaves a stray token behind (`body = 'It isn't
+        # broken'`), so this boundary is the one genuine gap the 3.9-and-
+        # earlier wording leaves open.
         assert annotate_failure("python3 x.py", 1,
             '  File "x.py", line 1\n    if x\n       ^\n'
             "SyntaxError: expected ':'") is None

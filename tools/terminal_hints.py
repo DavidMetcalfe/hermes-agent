@@ -65,6 +65,14 @@ PAYLOAD_QUOTING_PATTERNS: tuple[str, ...] = (
     # payload apostrophe closed the literal; the optional group covers the
     # triple-quoted variant (multi-line payload inside a """...""" literal).
     r"SyntaxError: unterminated (?:triple-quoted )?string literal",
+    # Python 3.9 and earlier word those two failures differently ("EOL/EOF while
+    # scanning ..."; bpo-40176 changed it in 3.10) — captured verbatim on 3.9.6,
+    # which is still the macOS system python3. Both messages are specific to an
+    # unterminated literal, so they carry the same remedy. A nested payload
+    # apostrophe on 3.9.6 surfaces as the generic `SyntaxError: invalid syntax`,
+    # which this rule deliberately leaves to the unrelated-syntax-error boundary.
+    r"SyntaxError: EOL while scanning string literal",
+    r"SyntaxError: EOF while scanning triple-quoted string literal",
     r"unexpected EOF while looking for matching",         # bash/sh wrapper, unmatched quote
     r"(?:^|\s)zsh:\d*:? unmatched",                       # zsh's wording for the same failure
 )
