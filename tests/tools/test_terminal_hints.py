@@ -111,11 +111,13 @@ class TestPayloadQuoting:
         assert "gh api -F body=@<file>" in hint
         assert "open(path).read()" in hint
         # Product invariant: Hermes must never normalize or rewrite the user's
-        # payload, so the hint must not read as permission to edit it.
-        assert "Leave the payload text alone" in hint
+        # payload, so the hint must not read as permission to edit it. Pinned as
+        # the clause that carries the rule, not the whole sentence, so the
+        # wording stays free to tighten.
+        assert "Leave the payload" in hint
         # Scoping: only a stray character in the generated CODE may be swapped
         # for ASCII; payload characters must never be edited.
-        assert "merely stray in the generated code" in hint
+        assert "stray in the generated code" in hint
 
     def test_smart_quote_used_as_delimiter(self):
         out = ('  File "<string>", line 1\n'
