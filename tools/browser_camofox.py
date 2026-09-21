@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 30  # fallback when config is unreadable
 _NO_SESSION_ERROR = "No browser session. Call browser_navigate first."
-_vnc_url: Optional[str] = None  # cached from /health response
+_vnc_url: Optional[str] = None  # viewer URL resolved by _discover_vnc_url (may come from /vnc/status)
 _vnc_url_checked = False  # only probe once per process
 # Routed profiles (multiplexed gateway) each point CAMOFOX_URL at their own server, so the one-shot
 # slot above would hand the launch profile's VNC address to every other profile: memo per server URL.
@@ -141,19 +141,15 @@ def _discover_vnc_url(url: str, resp: Any) -> Optional[str]:
     """Resolve the noVNC URL for ``url`` from the ``/health`` response ``resp``.
 
     Precedence: ``browser.camofox.vnc_url`` config override, then the legacy
-    ``CAMOFOX_VNC_URL`` env bridge, then the legacy ``vncPort`` field on
-    ``/health``, then Camofox 1.13's optional ``/vnc/status`` endpoint.
+    ``vncPort`` field on ``/health``, then the ``/vnc/status`` endpoint the VNC
+    plugin registers.
     """
-    camofox_cfg = _get_camofox_config()
-    vnc_url = (
-        _validated_vnc_url(camofox_cfg.get("vnc_url"))
-        or _validated_vnc_url(get_secret("CAMOFOX_VNC_URL", ""))
-    )
+    vnc_url = _validated_vnc_url(_get_camofox_config().get("vnc_url"))
     if vnc_url is None:
         try:
             data = resp.json()
             vnc_url = _discovered_vnc_url(url, data.get("vncPort"))
-        except (TypeError, ValueError, KeyError):
+        except (AttributeError, TypeError, ValueError, KeyError):
             vnc_url = None
 
     # Camofox 1.13 moved noVNC metadata from /health to /vnc/status.
