@@ -2286,7 +2286,10 @@ def free_tier_context_note(model: str, context_length: int, *, provider: str = "
     users read the gap (e.g. ``deepseek-v4-flash-free`` at 200K vs the 1M ``deepseek-v4-flash``
     family entry) as a detection failure and second-guess a working resolution. Pure helper:
     no I/O, silent (None) unless the cap is provable — a non-free id, no family entry, or a
-    resolved window already at/above the family's has nothing to say."""
+    resolved window already at/above the family's has nothing to say. A routing suffix AFTER
+    the free marker (e.g. ``glm-5.2:free:nitro``) is deliberately not stripped, so such ids
+    stay silent: this helper carries no OpenRouter routing-variant knowledge and prefers a
+    false negative to guessing."""
     if not isinstance(context_length, int) or context_length <= 0:
         return None
     raw = str(model or "").strip()

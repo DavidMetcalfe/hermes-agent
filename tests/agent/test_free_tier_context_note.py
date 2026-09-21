@@ -68,6 +68,12 @@ class TestSilent:
         native = DEFAULT_CONTEXT_LENGTHS["deepseek-v4-flash"]
         assert free_tier_context_note("deepseek-v4-flash", native // 5) is None
 
+    def test_routing_suffix_after_free_marker_does_not_fire(self):
+        # Documented non-case: a routing variant AFTER the marker (``:free:nitro``) is not
+        # stripped, so the note stays silent rather than guessing OpenRouter's variants.
+        family = DEFAULT_CONTEXT_LENGTHS["glm-5.2"]
+        assert free_tier_context_note("glm-5.2:free:nitro", family // 4, provider="openrouter") is None
+
     @pytest.mark.parametrize("bad", [0, -1, -200_000])
     def test_non_positive_context_length(self, bad):
         assert free_tier_context_note("deepseek-v4-flash-free", bad) is None
