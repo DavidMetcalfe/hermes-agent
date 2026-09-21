@@ -105,10 +105,13 @@ inside a shell string (see "Long bodies: hand off via a file" in `issues.md`) â€
 pass it as a file:
 
 ```bash
-# /tmp/pr-body.md holds the Markdown body (## Summary, ## Test Plan, Closes #42, ...)
+# pr-body.md holds the Markdown body (## Summary, ## Test Plan, Closes #42, ...).
+# Write it into the working directory with the write_file tool and pass the same
+# relative path â€” the file tool and the shell resolve it against that one
+# directory. Delete it when the call is done.
 gh pr create \
   --title "feat: add JWT-based user authentication" \
-  --body-file /tmp/pr-body.md
+  --body-file pr-body.md
 ```
 
 Options: `--draft`, `--reviewer user1,user2`, `--label "enhancement"`, `--base develop`
