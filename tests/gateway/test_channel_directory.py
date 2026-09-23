@@ -64,6 +64,19 @@ class TestLoadDirectory:
         assert result["updated_at"] is None
         assert result["platforms"] == {}
 
+    def test_null_platforms_map_is_treated_as_empty(self, tmp_path):
+        """#48303 review NIT: a cache written as ``{"platforms": null}`` must not
+        crash consumers. setdefault would hand back the stored None, and every
+        read path (merge, resolve, display, lookup) iterates the map."""
+        cache_file = _write_directory(tmp_path, None)
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            directory = load_directory()
+            assert directory["platforms"] == {}
+            # Consumers go through load_directory(); none may raise.
+            assert resolve_channel_name("discord", "anything") is None
+            assert lookup_channel_type("discord", "100") is None
+            assert "No messaging platforms" in format_directory_for_display()
+
 
 class TestBuildChannelDirectoryWrites:
     def test_failed_write_preserves_previous_cache(self, tmp_path, monkeypatch):
