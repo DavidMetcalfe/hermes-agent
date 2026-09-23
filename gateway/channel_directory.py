@@ -444,10 +444,16 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     platforms = load_directory().get("platforms", {})
     if platform_name not in platforms:
         return None
-    hit = _match_channel(platform_name, platforms.get(platform_name) or [], name)
+    channels = platforms.get(platform_name) or []
+    hit = _match_channel(platform_name, channels, name)
     if hit is not None or platform_name in _SKIP_SESSION_DISCOVERY:
         return hit
-    return _match_channel(platform_name, _build_from_sessions(platform_name), name)
+    # Retry over the cached list EXTENDED BY session entries, never the session entries
+    # alone: _match_channel's prefix step only accepts an unambiguous match, and
+    # ambiguity is a property of the whole candidate set. Session-only matching let a
+    # name that is ambiguous in the directory ("foo" against "foobar"/"foobaz")
+    # resolve to a lone session DM the user never named (#48303).
+    return _match_channel(platform_name, [*channels, *_build_from_sessions(platform_name)], name)
 
 
 def merge_session_channels(platforms: Dict[str, Any]) -> None:

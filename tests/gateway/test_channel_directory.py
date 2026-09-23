@@ -285,6 +285,36 @@ class TestSessionFallbackResolution:
             assert resolve_channel_name("telegram", "unknown-contact") is None
         assert calls == ["telegram"]
 
+    def test_ambiguous_directory_prefix_is_not_silently_resolved_by_session_entry(self, tmp_path):
+        """G: "foo" is ambiguous in the directory ("foobar" vs "foobaz"), so
+        nothing may be silently chosen — even when the session entries alone
+        look unambiguous. Uniqueness is a property of the whole candidate set;
+        matching sessions in isolation manufactures a false prefix hit and
+        mis-addresses the send (#48303 review follow-up)."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [
+                {"id": "111", "name": "foobar", "guild": "G", "type": "channel"},
+                {"id": "222", "name": "foobaz", "guild": "G", "type": "channel"},
+            ]},
+            _dm_session("discord", "77", "foobar-dm"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "foo") is None
+
+    def test_unique_session_prefix_resolves_when_directory_has_no_competitor(self, tmp_path):
+        """H: the union fix must not over-correct — a session-only name whose
+        prefix is unique across directory AND sessions still resolves, by full
+        name and by prefix."""
+        dir_patch, home_patch = self._home(
+            tmp_path,
+            {"discord": [{"id": "111", "name": "general", "guild": "G", "type": "channel"}]},
+            _dm_session("discord", "77", "foobar-dm"),
+        )
+        with dir_patch, home_patch:
+            assert resolve_channel_name("discord", "foobar") == "77"
+            assert resolve_channel_name("discord", "foo") == "77"
+
 
 class TestBuildFromSessions:
     def _write_sessions(self, tmp_path, sessions_data):
