@@ -366,11 +366,13 @@ CAMOFOX_URL=http://localhost:9377
 ```
 
 Camofox's noVNC viewer is discovered automatically: Hermes reads the viewer
-address from the VNC plugin's `GET /vnc/status` response (falling back to a
-`vncPort` field on `/health` for older deployments) and includes the link in
-navigation responses. If the discovered host and port are not reachable from
-the device whose browser you want to watch from — Camofox behind a reverse
-proxy or inside a container, for example — set the viewer URL explicitly:
+address from the VNC plugin's `GET /vnc/status` response (added in
+camofox-browser v1.13.0) and includes the link in navigation responses. A
+`vncPort` field on `/health` is read only as a last resort, for locally patched
+servers — no released camofox-browser reports one. If the discovered host and
+port are not reachable from the device whose browser you want to watch from —
+Camofox behind a reverse proxy or inside a container, for example — set the
+viewer URL explicitly:
 
 ```yaml
 browser:

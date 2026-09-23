@@ -350,6 +350,34 @@ class TestVncUrlDiscovery:
             assert check_camofox_available() is True
         assert get_vnc_url() == "http://myhost:6080/vnc.html"
 
+    def test_vnc_status_relative_path_falls_back_to_vnc_html(self, monkeypatch):
+        """A path the viewer cannot be served from must not yield a pathless link."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://myhost:9377")
+        health_resp = _mock_response(json_data={"ok": True})
+        status_resp = _mock_response(
+            json_data={"running": True, "novncPort": 6080, "path": "vnc.html"}
+        )
+        with patch(
+            "tools.browser_camofox.requests.get",
+            side_effect=[health_resp, status_resp],
+        ):
+            assert check_camofox_available() is True
+        assert get_vnc_url() == "http://myhost:6080/vnc.html"
+
+    def test_vnc_status_outranks_legacy_health_port(self, monkeypatch):
+        """A raw x11vnc port on /health must not shadow the plugin's noVNC address."""
+        monkeypatch.setenv("CAMOFOX_URL", "http://myhost:9377")
+        health_resp = _mock_response(json_data={"ok": True, "vncPort": 5900})
+        status_resp = _mock_response(
+            json_data={"running": True, "novncPort": 6080, "path": "/vnc.html"}
+        )
+        with patch(
+            "tools.browser_camofox.requests.get",
+            side_effect=[health_resp, status_resp],
+        ):
+            assert check_camofox_available() is True
+        assert get_vnc_url() == "http://myhost:6080/vnc.html"
+
 
     def test_navigate_includes_vnc_hint(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
