@@ -385,13 +385,20 @@ def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
 # --- Read / resolve --------------------------------------------------------
 
 def load_directory() -> Dict[str, Any]:
-    """Load the cached directory from disk, with aliases re-applied on read."""
+    """Load the cached directory from disk, with aliases re-applied on read.
+
+    A cache whose ``platforms`` map is null (or otherwise not a dict) is treated as
+    empty: ``setdefault`` hands back the stored ``None`` instead of the default, so
+    every consumer would crash iterating it (#48303 review NIT).
+    """
     directory_path = _directory_path()
     if directory_path.exists():
         with contextlib.suppress(Exception):
             data = _read_json(directory_path)
+            if not isinstance(data.get("platforms"), dict):
+                data["platforms"] = {}
             # Aliases apply on read too, so new names take effect between timed rebuilds.
-            _apply_channel_aliases(data.setdefault("platforms", {}))
+            _apply_channel_aliases(data["platforms"])
             return data
     base = {"updated_at": None, "platforms": {}}
     _apply_channel_aliases(base["platforms"])
