@@ -33,7 +33,7 @@ _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # (#111334, see the intent-guard comment below).  An attacker prefixing the
 # directive with words still matches (the quote is no longer adjacent to the
 # verb).
-_QUOTED = r'(?<!["\'“”«»])'
+_QUOTED = r'(?<!["\'‘’“”«»])'
 
 # Intent-context guard for ``prompt_injection`` (#92644). The pattern matches
 # sentences that *describe* the attack to teach the agent to recognise it —
@@ -83,16 +83,27 @@ _ABBREVIATIONS = frozenset({
     "inc", "ltd", "fig", "no", "vol", "al",
 })
 _WORD_RUN_RE = re.compile(r"\w*$")
-# Closing quotes/brackets (and space) between a sentence's last word and its
-# terminator (``…such as "npm". Ignore …``): stripped before the word-run
-# check, otherwise the run sees ``"`` (len < 2) and denies a real terminator,
-# leaking the previous sentence's cue into the directive's window (#111334).
-_TRAILING_CLOSERS = "'\"“”)]} "
+# Closing quotes/brackets (and space) around a sentence's terminator
+# (``…such as "npm". Ignore …`` and the US-typography ``…such as these." Ignore …``):
+# stripped before the word-run check (otherwise the run sees ``"`` (len < 2)
+# and denies a real terminator) and skipped after a period in
+# ``_is_sentence_dot`` — either way the leak this prevents is the previous
+# sentence's cue reaching into the directive's window (#111334, #121713).
+# Single curly quotes and guillemets belong here for the same reason they
+# belong in ``_QUOTED``: NFKC leaves them intact.
+_TRAILING_CLOSERS = "\"'‘’“”«»)]} "
 
 
 def _is_sentence_dot(prefix: str, i: int) -> bool:
     """Whether ``prefix[i] == '.'`` closes a sentence (see terminator rules above)."""
-    if i + 1 < len(prefix) and not prefix[i + 1].isspace():
+    # US typography closes quotes/brackets AFTER the period (``tactics."``):
+    # skip such closers before the whitespace requirement, mirroring the
+    # closer-before-period strip on the word-run check below — otherwise the
+    # terminator is denied and the previous sentence's cue leaks in (#121713).
+    j = i + 1
+    while j < len(prefix) and prefix[j] in _TRAILING_CLOSERS and not prefix[j].isspace():
+        j += 1
+    if j < len(prefix) and not prefix[j].isspace():
         return False  # mid-token dot (file.txt, U.S.): not a terminator
     # Residual (documented): a sentence ending in a single-letter word
     # (``Option A.``) fails the >=2 run rule and is not a terminator here —
