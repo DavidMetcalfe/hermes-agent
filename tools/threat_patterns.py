@@ -28,8 +28,11 @@ _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # instructions" → these have no effect`` — and blocking on the quoted
 # occurrence would quarantine the whole identity file.  Guard the
 # imperative injection patterns with a negative lookbehind so only
-# unquoted occurrences fire (#90635).  An attacker prefixing the directive
-# with words still matches (the quote is no longer adjacent to the verb).
+# unquoted occurrences fire (#90635) — at the non-strict scopes only;
+# scope="strict" compiles the same patterns with this exemption stripped
+# (#111334, see the intent-guard comment below).  An attacker prefixing the
+# directive with words still matches (the quote is no longer adjacent to the
+# verb).
 _QUOTED = r'(?<!["\'“”«»])'
 
 # Intent-context guard for ``prompt_injection`` (#92644). The pattern matches
@@ -45,8 +48,15 @@ _QUOTED = r'(?<!["\'“”«»])'
 # "told to"). Python ``re`` has no variable-length lookbehind, so this is a
 # post-match prefix check in the scan loop, and it applies ONLY to the IDs in
 # ``_INTENT_GUARDED_IDS`` — every other pattern fires regardless of context.
-# Residual (issue-accepted): an attacker who prefixes a real directive with a
-# same-sentence cue phrase evades the guard.
+# Scope limit (#111334 cross-vendor review): this guard and the ``_QUOTED``
+# citation exemption apply ONLY at the non-strict scopes, where doctrine
+# actually loads (context files / tool results scan "context"; "all" is the
+# narrow file-content set with no user-prompt callers). At scope="strict" —
+# raw user-authored writes (memory tool, install paths) — scanning is
+# unconditional: a cue-prefixed or quoted directive there is a real payload
+# and must fire.
+# Residual (issue-accepted, non-strict only): an attacker who prefixes a real
+# directive with a same-sentence cue phrase evades the guard.
 _INTENT_GUARDED_IDS = {"prompt_injection"}
 _CUE_WINDOW = 60
 # Word-boundary alternation so cues cannot fire as substrings of longer words.
@@ -73,13 +83,21 @@ _ABBREVIATIONS = frozenset({
     "inc", "ltd", "fig", "no", "vol", "al",
 })
 _WORD_RUN_RE = re.compile(r"\w*$")
+# Closing quotes/brackets (and space) between a sentence's last word and its
+# terminator (``…such as "npm". Ignore …``): stripped before the word-run
+# check, otherwise the run sees ``"`` (len < 2) and denies a real terminator,
+# leaking the previous sentence's cue into the directive's window (#111334).
+_TRAILING_CLOSERS = "'\"“”)]} "
 
 
 def _is_sentence_dot(prefix: str, i: int) -> bool:
     """Whether ``prefix[i] == '.'`` closes a sentence (see terminator rules above)."""
     if i + 1 < len(prefix) and not prefix[i + 1].isspace():
         return False  # mid-token dot (file.txt, U.S.): not a terminator
-    run = _WORD_RUN_RE.search(prefix[:i])
+    # Residual (documented): a sentence ending in a single-letter word
+    # (``Option A.``) fails the >=2 run rule and is not a terminator here —
+    # an abbreviation guard would instead break ``U.S.``/``e.g.`` handling.
+    run = _WORD_RUN_RE.search(prefix[:i].rstrip(_TRAILING_CLOSERS))
     run = run.group() if run else ""
     return len(run) >= 2 and run.lower() not in _ABBREVIATIONS
 
@@ -202,7 +220,12 @@ def _compile() -> dict[str, List[Tuple[re.Pattern, str]]]:
         if scope not in _SCOPE_SETS:
             raise ValueError(f"threat_patterns: unknown scope {scope!r} for pattern {pid!r}")
         for s in _SCOPE_SETS[scope]:
-            compiled[s].append((re.compile(pattern, re.IGNORECASE), pid))
+            # #111334: strict is unconditional — dual-compile the _QUOTED
+            # patterns without the citation lookbehind, so a quoted
+            # directive in a user-authored write (memory, install) fires.
+            # The literal replace is exact: _QUOTED is a fixed fragment.
+            src = pattern.replace(_QUOTED, "") if s == "strict" else pattern
+            compiled[s].append((re.compile(src, re.IGNORECASE), pid))
     return compiled
 
 
@@ -213,7 +236,9 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
     reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope.
     ``prompt_injection`` alone has an intent-cue guard: a same-sentence descriptive
-    cue before the match marks doctrine (#92644) and skips the finding."""
+    cue before the match marks doctrine (#92644) and skips the finding. Both
+    doctrine exemptions — this cue guard and the ``_QUOTED`` citation lookbehind —
+    never apply at scope="strict": there scanning is unconditional (#111334)."""
     if not content:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
@@ -224,12 +249,15 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
+    # #111334: at strict the cue guard is short-circuited (quoted variants are
+    # already compiled in without the lookbehind — see _compile).
+    guard_cues = scope != "strict"
     for compiled, pid in patterns:
         # #92644: a prompt_injection hit whose 60-char prefix carries a
         # descriptive cue ("telling you to …") is doctrine, not a directive.
         # finditer, not search: a descriptive occurrence must not mask a later
         # bare directive in the same content.
-        if pid in _INTENT_GUARDED_IDS:
+        if guard_cues and pid in _INTENT_GUARDED_IDS:
             if any(not _is_descriptive(normalised, m.start()) for m in compiled.finditer(normalised)):
                 findings.append(pid)
             continue
