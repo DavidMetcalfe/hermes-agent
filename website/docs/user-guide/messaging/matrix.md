@@ -718,25 +718,25 @@ history, so other clients trust it immediately.
 **Cause**: matrix.org migrated to the Matrix Authentication Service (MAS) in
 April 2025, and MAS issues access tokens that expire after roughly 4 hours
 (14400 s). The Matrix adapter has no refresh-token path on current versions, so
-when the token expires the sync loop keeps retrying against a dead token — the
-gateway still shows as connected, but no inbound events arrive until the token
-is rotated and the gateway restarted. Self-hosted homeservers with
-non-expiring tokens (the default Synapse behavior) are unaffected. See
-[#93929](https://github.com/NousResearch/hermes-agent/issues/93929).
+when the token expires the adapter fails silently: the sync loop keeps
+retrying against a dead token and no inbound events arrive until the token is
+rotated and the gateway restarted. Self-hosted homeservers with
+non-expiring tokens (the default Synapse behavior) are unaffected.
 
 **Symptom**: Gateway log repeatedly shows `Matrix: sync error: Token is not active — retrying in 5s`
 or `MUnknownToken: *** is not active`.
 
-**Fix**: Obtain a fresh access token (see [Step 2: Get an Access Token](#step-2-get-an-access-token)) and restart the gateway. Refresh-token
-support is tracked in
+**Fix**: Obtain a fresh access token (see [Step 2: Get an Access Token](#step-2-get-an-access-token)) and restart the gateway.
+Refresh-token support is tracked in
 [#93929](https://github.com/NousResearch/hermes-agent/issues/93929).
 
 ### Large attachments are silently ignored
 
 **Cause**: Inbound media whose declared `info.size` exceeds
 `MATRIX_MAX_MEDIA_BYTES` (default 100 MB) is rejected before it reaches message
-handling. Only a gateway log warning is emitted — no reply reaches the room, and
-the agent never sees the caption.
+handling. Only a gateway log warning is emitted: the event is dropped before
+dispatch, so the agent never sees the message or its caption, and the room
+gets no acknowledgement.
 
 **Symptom**: Gateway log shows `[Matrix] Rejecting oversized inbound media <event_id> (N > M bytes)`.
 
@@ -753,8 +753,12 @@ Beeper) send only the structured `m.relates_to` / `m.in_reply_to` reference with
 no fallback text, so the reply event id resolves but the quoted text and author
 stay empty.
 
+**Symptom**: The agent responds without acknowledging the quoted message —
+reply context arrives empty on the agent side even though the user's client
+displays the quote normally.
+
 **Fix**: No user-side workaround — the message body itself is still delivered;
-only the quoted context is missing. Tracked in
+only the quoted context and author are missing. Tracked in
 [#108425](https://github.com/NousResearch/hermes-agent/issues/108425).
 
 ## Proxy Mode (E2EE on macOS)
