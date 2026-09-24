@@ -727,7 +727,7 @@ non-expiring tokens (the default Synapse behavior) are unaffected. See
 **Symptom**: Gateway log repeatedly shows `Matrix: sync error: Token is not active — retrying in 5s`
 or `MUnknownToken: *** is not active`.
 
-**Fix**: Obtain a fresh access token and restart the gateway. Refresh-token
+**Fix**: Obtain a fresh access token (see [Step 2: Get an Access Token](#step-2-get-an-access-token)) and restart the gateway. Refresh-token
 support is tracked in
 [#93929](https://github.com/NousResearch/hermes-agent/issues/93929).
 
@@ -741,7 +741,7 @@ the agent never sees the caption.
 **Symptom**: Gateway log shows `[Matrix] Rejecting oversized inbound media <event_id> (N > M bytes)`.
 
 **Fix**: Keep files under the limit, or raise `MATRIX_MAX_MEDIA_BYTES` in your
-`.env` (be aware this also raises the download allowance). Fail-loud handling of
+`.env` (be aware this also raises the upload and download caps). Fail-loud handling of
 rejected media is tracked in
 [#72238](https://github.com/NousResearch/hermes-agent/issues/72238).
 
