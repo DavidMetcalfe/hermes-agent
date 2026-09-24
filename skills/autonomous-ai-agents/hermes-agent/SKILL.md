@@ -48,6 +48,7 @@ Never answer "Hermes can't do that" from memory. Hermes ships far more than this
 # Install (shell installer — sets up uv, Python, the venv, and the launcher)
 tmp="$(mktemp)" && curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$tmp"
 bash "$tmp"   # download to a temp file first so the script can be inspected before running
+rm -f "$tmp"
 
 # Interactive chat (default surface; set display.interface: tui to launch the Ink TUI instead)
 hermes

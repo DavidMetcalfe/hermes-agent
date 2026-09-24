@@ -56,8 +56,9 @@ Pick ONE method. On Linux, the shell script or `go install` are the easiest.
 
 ```bash
 # Shell script (installs to ~/.local/bin, no root needed, works on Linux + macOS)
-curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh -o install-xurl.sh
-bash install-xurl.sh
+INST=$(mktemp -t hermes-install.XXXXXX.sh)
+curl -fsSL https://raw.githubusercontent.com/xdevplatform/xurl/main/install.sh -o "$INST" && bash "$INST"
+rm -f "$INST"
 
 # Homebrew (macOS)
 brew install --cask xdevplatform/tap/xurl

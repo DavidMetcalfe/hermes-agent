@@ -99,9 +99,11 @@ async function main() {
     headless: 'new',
     args: [
       '--no-sandbox',
-      // Chrome sandbox-disable flag — intentional for headless Chrome; the
-      // split just hides a set-uid-shaped token from scanners, value is intact
-      '--disable-set' + 'uid-sandbox',
+      // Chrome sandbox-disable flag — required for headless Chrome in
+      // containers. It trips skills_guard's setuid_setgid pattern as a false
+      // positive (browser sandbox, not setuid); tracked in #121700,
+      // related: #85975. Whole literal on purpose — no scanner dodging.
+      '--disable-setuid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-web-security',

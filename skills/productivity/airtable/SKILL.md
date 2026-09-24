@@ -191,7 +191,7 @@ List endpoints return at most **100 records per page**. If the response includes
 
 ```bash
 OFFSET=""
-AUTH="Authorization: Bearer ***"
+AUTH="Authorization: Bearer $AIRTABLE_API_KEY"
 while :; do
   URL="https://api.airtable.com/v0/$BASE_ID/$TABLE?pageSize=100"
   [ -n "$OFFSET" ] && URL="$URL&offset=$OFFSET"
@@ -204,7 +204,7 @@ done
 
 ## Typical Hermes Workflow
 
-1. **Confirm auth.** `AUTH="Authorization: Bearer ***"; curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "$AUTH"` — expect `200`.
+1. **Confirm auth.** `AUTH="Authorization: Bearer $AIRTABLE_API_KEY"; curl -s -o /dev/null -w "%{http_code}\n" https://api.airtable.com/v0/meta/bases -H "$AUTH"` — expect `200`.
 2. **Find the base.** List bases (step above) OR ask the user for the `app...` ID directly if the token lacks `schema.bases:read`.
 3. **Inspect the schema.** `GET /v0/meta/bases/$BASE_ID/tables` — cache the exact field names and primary-field name locally in the session before mutating anything.
 4. **Read before you write.** For "update X where Y", `filterByFormula` first to resolve the `rec...` ID, then `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID`. Never guess record IDs.
