@@ -187,6 +187,7 @@ def test_openrouter_headers_no_cache_when_disabled(mock_openai):
 
 # ---------------------------------------------------------------------------
 # profile.default_headers forwarding — explicit-credential construction (#28043)
+# aux api-key chain counterpart: tests/agent/test_auxiliary_user_default_headers.py
 # ---------------------------------------------------------------------------
 
 
