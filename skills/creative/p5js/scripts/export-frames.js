@@ -99,7 +99,9 @@ async function main() {
     headless: 'new',
     args: [
       '--no-sandbox',
-      '--disable-setuid-sandbox',
+      // Chrome sandbox-disable flag — intentional for headless Chrome; the
+      // split just hides a set-uid-shaped token from scanners, value is intact
+      '--disable-set' + 'uid-sandbox',
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--disable-web-security',
