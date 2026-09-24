@@ -57,14 +57,50 @@ _DESCRIPTIVE_CUES_RE = re.compile(
 )
 # Sentence terminators that close the cue window (#92644 review): doctrine
 # cues sit in the same sentence as the described phrase by construction.
-_SENTENCE_END_CHARS = ".!?\n"
+# ``!`` and ``?`` are unconditional terminators. A ``.`` terminates ONLY when
+# followed by whitespace/end-of-window AND its preceding word-char run is
+# >=2 chars and not a known abbreviation: ``e.g.``/``i.e.``/decimals (``1.2``)/
+# ``U.S.`` are excluded by the >=2 rule, ``etc.``/``vs.``/``Dr.`` by the set.
+# A single ``\n`` is a SOFT WRAP, not a terminator — hard-wrapped (72-80 col)
+# doctrine prose is ONE sentence, and cutting at line breaks orphaned the cue
+# and re-blocked the very defense text the guard exists to protect. Attacker
+# cross-line cue-prefixing is already the documented accepted residual of
+# this guard, so nothing new opens. Only a blank line (``\n\n``, a paragraph
+# break) terminates a sentence.
+_SENTENCE_END_CHARS = ".!?"
+_ABBREVIATIONS = frozenset({
+    "etc", "vs", "cf", "approx", "dr", "mr", "mrs", "ms", "st", "jr", "sr",
+    "inc", "ltd", "fig", "no", "vol", "al",
+})
+_WORD_RUN_RE = re.compile(r"\w*$")
+
+
+def _is_sentence_dot(prefix: str, i: int) -> bool:
+    """Whether ``prefix[i] == '.'`` closes a sentence (see terminator rules above)."""
+    if i + 1 < len(prefix) and not prefix[i + 1].isspace():
+        return False  # mid-token dot (file.txt, U.S.): not a terminator
+    run = _WORD_RUN_RE.search(prefix[:i])
+    run = run.group() if run else ""
+    return len(run) >= 2 and run.lower() not in _ABBREVIATIONS
+
+
+def _last_terminator(prefix: str) -> int:
+    """Slice index just after the last TRUE sentence terminator in ``prefix``
+    (the cue window); 0 when the whole window is one sentence."""
+    cut = 0
+    for i, ch in enumerate(prefix):
+        if ch in _SENTENCE_END_CHARS:
+            if ch != "." or _is_sentence_dot(prefix, i):
+                cut = i + 1
+        elif ch == "\n" and prefix.startswith("\n", i + 1):
+            cut = i + 2  # blank line = paragraph break
+    return cut
 
 
 def _is_descriptive(normalised: str, match_start: int) -> bool:
     prefix = normalised[max(0, match_start - _CUE_WINDOW):match_start]
     # Same-sentence only: drop everything up to the last terminator in the window.
-    cut = max(prefix.rfind(ch) for ch in _SENTENCE_END_CHARS)
-    return bool(_DESCRIPTIVE_CUES_RE.search(prefix[cut + 1:]))
+    return bool(_DESCRIPTIVE_CUES_RE.search(prefix[_last_terminator(prefix):]))
 
 # Each entry: (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
