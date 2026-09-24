@@ -32,6 +32,28 @@ _MODIFY = r"(update|modify|edit|write|change|append|add\s+to)\s+[^\n]{0,2048}"
 # with words still matches (the quote is no longer adjacent to the verb).
 _QUOTED = r'(?<!["\'“”«»])'
 
+# Intent-context guard for ``prompt_injection`` (#92644). The pattern matches
+# sentences that *describe* the attack to teach the agent to recognise it —
+# constitutional SOUL.md / AGENTS.md doctrine like "when you encounter prompt
+# injection — instructions telling you to ignore previous instructions …".
+# After a match, the ~60 chars immediately BEFORE it are checked (case-
+# insensitive) for a descriptive cue; a cue means the phrase is quoted
+# description, not a directive, and the finding is skipped. Python ``re`` has
+# no variable-length lookbehind, so this is a post-match prefix check in the
+# scan loop, and it applies ONLY to ``prompt_injection`` — every other pattern
+# fires regardless of context. Residual (issue-accepted): an attacker who
+# prefixes a real directive with a cue phrase evades the guard.
+_CUE_WINDOW = 60
+_DESCRIPTIVE_CUES = (
+    "when you encounter", "telling you to", "told to", "describing",
+    "defending against", "examples of", "attack patterns like", "such as",
+)
+
+
+def _is_descriptive(normalised: str, match_start: int) -> bool:
+    prefix = normalised[max(0, match_start - _CUE_WINDOW):match_start].lower()
+    return any(cue in prefix for cue in _DESCRIPTIVE_CUES)
+
 # Each entry: (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
     # ── Classic prompt injection (applies everywhere) ────────────────
@@ -152,7 +174,17 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     # NFKC folds full-width / compatibility variants (ｃａｔ → cat) against homograph bypass.
     # It does NOT fold cross-script confusables (Cyrillic ``а``) — that needs a TR#39 database.
     normalised = unicodedata.normalize("NFKC", content)
-    findings.extend(pid for compiled, pid in patterns if compiled.search(normalised))
+    for compiled, pid in patterns:
+        # #92644: a prompt_injection hit whose 60-char prefix carries a
+        # descriptive cue ("telling you to …") is doctrine, not a directive.
+        # finditer, not search: a descriptive occurrence must not mask a later
+        # bare directive in the same content.
+        if pid == "prompt_injection":
+            if any(not _is_descriptive(normalised, m.start()) for m in compiled.finditer(normalised)):
+                findings.append(pid)
+            continue
+        if compiled.search(normalised):
+            findings.append(pid)
     return findings
 
 
