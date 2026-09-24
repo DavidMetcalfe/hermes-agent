@@ -446,6 +446,7 @@ class ModelSwitchResult:
     new_model: str = ""
     target_provider: str = ""
     provider_changed: bool = False
+    provider_inferred: bool = False  # target_provider came from the model NAME, not from the user
     api_key: str = ""
     base_url: str = ""
     api_mode: str = ""
@@ -1189,6 +1190,9 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
+    # Cross-provider inference from a bare model name (routing step e) — see
+    # :func:`inferred_provider_persist_refusal`; never set by a user-named route.
+    provider_inferred: bool = False
     provider_label: str = ""
     api_key: str = ""
     base_url: str = ""
@@ -1406,6 +1410,12 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
         detected = detect_provider_for_model(st.new_model, current_provider)
         if detected:
             st.target_provider, st.new_model = detected
+            # Provenance: this provider came from the model NAME (detect's only gate is
+            # credential possession), never from the user — "possessing a credential is
+            # not selecting a provider" (#107366 ruling, #115079). Cross-provider only:
+            # detect handing back the CURRENT provider is a model rename, not an
+            # inferred route, and stays a plain model-only switch.
+            st.provider_inferred = detected[0] != st.current_provider
     return None
 
 
@@ -1724,7 +1734,8 @@ def _build_switch_result(st: _Switch) -> ModelSwitchResult:
         request_overrides = None
     return ModelSwitchResult(
         success=True, new_model=st.new_model, target_provider=st.target_provider,
-        provider_changed=st.provider_changed, api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
+        provider_changed=st.provider_changed, provider_inferred=st.provider_inferred,
+        api_key=st.api_key, base_url=st.base_url, api_mode=st.api_mode,
         request_overrides=dict(request_overrides or {}), warning_message=" | ".join(warnings) if warnings else "",
         provider_label=st.provider_label, resolved_via_alias=st.resolved_alias, capabilities=capabilities,
         runtime_capabilities={
@@ -1815,9 +1826,69 @@ def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     return model_cfg
 
 
-def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> None:
+def inferred_provider_persist_refusal(target_provider: str, confirm_hint: str) -> Optional[str]:
+    """Authorization gate for persisting ``model.provider=<target>`` into config.yaml when the
+    provider was INFERRED from a bare model name rather than named by the user (#115079).
+
+    Standing ruling (PR #107366): possessing a credential is not selecting a provider — the
+    detection ladder's only gate is credential possession (``provider_has_credentials``), so
+    an ambient ``*_API_KEY`` alone must not earn a durable provider route. Returns ``None``
+    when persisting is authorized, else the user-facing refusal (the message ends with
+    ``confirm_hint`` verbatim — each surface supplies its own "how to confirm" text).
+
+    Authorized (either proves the user NAMED this provider):
+    (i) the auth-store ``active_provider`` — written only by login/selection flows
+        (``_save_provider_state`` / ``hermes auth add``); ``persist_model_selection`` itself
+        never touches auth.json, so this cannot be a self-fulfilling check. Read through the
+        public ``get_active_provider()`` and compared exactly the way the private
+        ``_active_provider_is`` (auth.py) does — trim + casefold.
+    (ii) fresh install — the config carries neither ``model.default`` nor ``model.provider``
+        (``resolve_persist_behavior``'s documented first-pick intent: the pick must not
+        evaporate into whatever key is lying around on next launch). An unreadable config is
+        NOT fresh (same fail-closed rule there).
+    Everything else refuses; the session-scoped switch itself is unaffected."""
+    try:  # an unreadable auth store grants nothing — gate (i) simply sees "no active provider"
+        from hermes_cli.auth import get_active_provider
+        active = (get_active_provider() or "").strip().lower()
+    except Exception:
+        active = ""
+    if active and active == str(target_provider or "").strip().lower():
+        return None
+    try:
+        from hermes_cli.config import load_config
+        model_cfg = load_config().get("model")
+    except Exception:
+        return _inferred_provider_refusal_message(target_provider, confirm_hint)
+    if isinstance(model_cfg, dict):
+        if not (model_cfg.get("default") or model_cfg.get("provider")):
+            return None
+    elif not model_cfg:
+        return None
+    return _inferred_provider_refusal_message(target_provider, confirm_hint)
+
+
+def _inferred_provider_refusal_message(target_provider: str, confirm_hint: str) -> str:
+    return (
+        f"Provider '{target_provider}' was inferred from the model name, never selected by you, "
+        f"so it was NOT saved to config.yaml — the switch applies to this session only. "
+        f"{confirm_hint}")
+
+
+# Shared confirmation copy for the shared persist path (surface-neutral slash syntax, valid on
+# CLI and gateway; ``--provider``/``--global`` are parsed by parse_model_flags_detailed).
+_INFERRED_PERSIST_CONFIRM_HINT = (
+    "To save this route, name the provider: /model <model> --provider <slug> --global, "
+    "or pick provider and model together in `hermes model`.")
+
+
+def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) -> Optional[str]:
     """Write a successful :func:`switch_model` result to ``config_path`` (default:
     ``HERMES_HOME/config.yaml`` — the context override or ``HERMES_HOME`` at call time).
+
+    Returns ``None`` once persisted (or with nothing to do), else a user-facing refusal
+    message: an INFERRED provider route (#115079) is not authorized to persist, so nothing is
+    written and the caller must surface the message on its warning channel. The session
+    switch that produced ``result`` stays fully in effect either way.
 
     Targeted key writes, not a whole-``model:`` rewrite: a block rewrite destroys sibling keys the
     user set there (``model_slots``, ``model_fallback``, ...). ``should_clear_context_pin`` can do
@@ -1825,6 +1896,13 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from pathlib import Path
     from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
+    # Duck-typed results predate the provenance field (getattr is the established pattern for
+    # ModelSwitchResult consumers): a result carrying no provenance is not flagged inferred.
+    if getattr(result, "provider_inferred", False) and getattr(result, "provider_changed", False):
+        refusal = inferred_provider_persist_refusal(
+            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT)
+        if refusal:
+            return refusal
     path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
