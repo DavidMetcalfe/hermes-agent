@@ -718,9 +718,9 @@ history, so other clients trust it immediately.
 **Cause**: matrix.org migrated to the Matrix Authentication Service (MAS) in
 April 2025, and MAS issues access tokens that expire after roughly 4 hours
 (14400 s). The Matrix adapter has no refresh-token path on current versions, so
-when the token expires the adapter fails silently: the sync loop keeps
-retrying against a dead token and no inbound events arrive until the token is
-rotated and the gateway restarted. Self-hosted homeservers with
+when the token expires the adapter repeatedly logs a sync error and the sync
+loop keeps retrying against a dead token; no inbound events arrive until the
+token is rotated and the gateway restarted. Self-hosted homeservers with
 non-expiring tokens (the default Synapse behavior) are unaffected.
 
 **Symptom**: Gateway log repeatedly shows `Matrix: sync error: Token is not active — retrying in 5s`
@@ -736,7 +736,7 @@ Refresh-token support is tracked in
 `MATRIX_MAX_MEDIA_BYTES` (default 100 MB) is rejected before it reaches message
 handling. Only a gateway log warning is emitted: the event is dropped before
 dispatch, so the agent never sees the message or its caption, and the room
-gets no acknowledgement.
+receives no response from the bot.
 
 **Symptom**: Gateway log shows `[Matrix] Rejecting oversized inbound media <event_id> (N > M bytes)`.
 
