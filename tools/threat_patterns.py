@@ -36,23 +36,35 @@ _QUOTED = r'(?<!["\'“”«»])'
 # sentences that *describe* the attack to teach the agent to recognise it —
 # constitutional SOUL.md / AGENTS.md doctrine like "when you encounter prompt
 # injection — instructions telling you to ignore previous instructions …".
-# After a match, the ~60 chars immediately BEFORE it are checked (case-
-# insensitive) for a descriptive cue; a cue means the phrase is quoted
-# description, not a directive, and the finding is skipped. Python ``re`` has
-# no variable-length lookbehind, so this is a post-match prefix check in the
-# scan loop, and it applies ONLY to ``prompt_injection`` — every other pattern
-# fires regardless of context. Residual (issue-accepted): an attacker who
-# prefixes a real directive with a cue phrase evades the guard.
+# After a match, the ~60 chars immediately BEFORE it are checked for a
+# descriptive cue; a cue means the phrase is quoted description, not a
+# directive, and the finding is skipped. Two scoping rules keep the guard
+# honest: the window is truncated at the last sentence terminator inside it
+# (a cue in the PREVIOUS sentence must not excuse a bare directive), and cues
+# are word-boundary-anchored ("such assumption" ≠ "such as", "retold to" ≠
+# "told to"). Python ``re`` has no variable-length lookbehind, so this is a
+# post-match prefix check in the scan loop, and it applies ONLY to the IDs in
+# ``_INTENT_GUARDED_IDS`` — every other pattern fires regardless of context.
+# Residual (issue-accepted): an attacker who prefixes a real directive with a
+# same-sentence cue phrase evades the guard.
+_INTENT_GUARDED_IDS = {"prompt_injection"}
 _CUE_WINDOW = 60
-_DESCRIPTIVE_CUES = (
-    "when you encounter", "telling you to", "told to", "describing",
-    "defending against", "examples of", "attack patterns like", "such as",
+# Word-boundary alternation so cues cannot fire as substrings of longer words.
+_DESCRIPTIVE_CUES_RE = re.compile(
+    r"\b(?:when you encounter|telling you to|told to|describing|"
+    r"defending against|examples of|attack patterns like|such as)\b",
+    re.IGNORECASE,
 )
+# Sentence terminators that close the cue window (#92644 review): doctrine
+# cues sit in the same sentence as the described phrase by construction.
+_SENTENCE_END_CHARS = ".!?\n"
 
 
 def _is_descriptive(normalised: str, match_start: int) -> bool:
-    prefix = normalised[max(0, match_start - _CUE_WINDOW):match_start].lower()
-    return any(cue in prefix for cue in _DESCRIPTIVE_CUES)
+    prefix = normalised[max(0, match_start - _CUE_WINDOW):match_start]
+    # Same-sentence only: drop everything up to the last terminator in the window.
+    cut = max(prefix.rfind(ch) for ch in _SENTENCE_END_CHARS)
+    return bool(_DESCRIPTIVE_CUES_RE.search(prefix[cut + 1:]))
 
 # Each entry: (regex, pattern_id, scope); scope ∈ {"all", "context", "strict"}
 _PATTERNS: List[Tuple[str, str, str]] = [
@@ -163,7 +175,9 @@ _COMPILED = _compile()
 
 def scan_for_threats(content: str, scope: str = "context") -> List[str]:
     """Matched pattern IDs in ``content`` for ``scope``; invisible codepoints are
-    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope."""
+    reported as ``"invisible_unicode_U+XXXX"``. Raises ValueError on an unknown scope.
+    ``prompt_injection`` alone has an intent-cue guard: a same-sentence descriptive
+    cue before the match marks doctrine (#92644) and skips the finding."""
     if not content:
         return []
     if (patterns := _COMPILED.get(scope)) is None:
@@ -179,7 +193,7 @@ def scan_for_threats(content: str, scope: str = "context") -> List[str]:
         # descriptive cue ("telling you to …") is doctrine, not a directive.
         # finditer, not search: a descriptive occurrence must not mask a later
         # bare directive in the same content.
-        if pid == "prompt_injection":
+        if pid in _INTENT_GUARDED_IDS:
             if any(not _is_descriptive(normalised, m.start()) for m in compiled.finditer(normalised)):
                 findings.append(pid)
             continue
