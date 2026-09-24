@@ -189,6 +189,9 @@ _DEEPSEEK_LEGACY_FLAT_RATES: Dict[str, PricingEntry] = {
     "deepseek-chat": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-reasoner": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-v4-flash": _DEEPSEEK_LEGACY_FLASH_ENTRY,
+    # The version-less canonical wire id (#107126): DeepSeek aliases the Flash
+    # line onto it, so it must map on every card its siblings map.
+    "deepseek-flash": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-v4-pro": _DEEPSEEK_LEGACY_PRO_ENTRY,
 }
 # The 2026-08-16 card (OFF-PEAK rates; peak hours bill 2x).  Pro is unchanged
@@ -213,6 +216,7 @@ _DEEPSEEK_2026_08_16_RATES: Dict[str, PricingEntry] = {
     "deepseek-chat": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
     "deepseek-reasoner": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
     "deepseek-v4-flash": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
+    "deepseek-flash": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
     "deepseek-v4-pro": _DEEPSEEK_2026_08_16_PRO_ENTRY,
 }
 # (billed from, billed until, per-model entries), oldest first.  The live

@@ -184,6 +184,34 @@ def test_deepseek_deprecated_aliases_price_as_flash():
         ), alias
 
 
+def test_deepseek_versionless_canonical_id_prices_on_dated_cards():
+    """Invariant: `deepseek-flash` is the version-less canonical wire id (#107126) —
+    it must price on every dated card exactly like its Flash-line alias siblings,
+    or historical re-pricing silently falls back to the live card and misstates cost."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    # (billing_time, the dated card that bills the moment)
+    cases = [
+        (datetime(2026, 8, 13, 10, 0, tzinfo=timezone.utc), "deepseek-pricing-2026-07"),
+        (datetime(2026, 8, 13, 2, 30, tzinfo=timezone.utc), "deepseek-pricing-2026-07"),
+        (datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc), "deepseek-pricing-2026-08-16"),
+        (datetime(2026, 8, 20, 2, 0, tzinfo=timezone.utc), "deepseek-pricing-2026-08-16"),
+        (datetime(2026, 9, 10, 3, 59, 59, tzinfo=timezone.utc), "deepseek-pricing-2026-08-16"),
+    ]
+    for stamp, card in cases:
+        canonical = estimate_usage_cost(
+            "deepseek-flash", usage, provider="deepseek", billing_time=stamp
+        )
+        assert canonical.pricing_version == card, f"{stamp}"
+        for sibling in ("deepseek-v4-flash", "deepseek-chat", "deepseek-reasoner"):
+            other = estimate_usage_cost(
+                sibling, usage, provider="deepseek", billing_time=stamp
+            )
+            assert (other.amount_usd, other.pricing_version) == (
+                canonical.amount_usd,
+                canonical.pricing_version,
+            ), f"{stamp} {sibling}"
+
+
 def test_deepseek_peak_hour_boundaries_after_switchover(monkeypatch):
     """Peak windows are half-open [01:00, 04:00) and [06:00, 10:00) UTC:
     hours 1, 2, 3 and 6, 7, 8, 9 are peak; 0, 4, 5, 10+ are off-peak."""
