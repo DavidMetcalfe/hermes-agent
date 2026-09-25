@@ -1856,7 +1856,8 @@ def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
     return model_cfg
 
 
-def inferred_provider_persist_refusal(target_provider: str, confirm_hint: str) -> Optional[str]:
+def inferred_provider_persist_refusal(
+    target_provider: str, confirm_hint: str, config_path: Any = None) -> Optional[str]:
     """Authorization gate for persisting ``model.provider=<target>`` into config.yaml when the
     provider was INFERRED from a bare model name rather than named by the user (#115079).
 
@@ -1872,10 +1873,17 @@ def inferred_provider_persist_refusal(target_provider: str, confirm_hint: str) -
         never touches auth.json, so this cannot be a self-fulfilling check. Read through the
         public ``get_active_provider()`` and compared exactly the way the private
         ``_active_provider_is`` (auth.py) does — trim + casefold.
-    (ii) fresh install — the config carries neither ``model.default`` nor ``model.provider``
-        (``resolve_persist_behavior``'s documented first-pick intent: the pick must not
-        evaporate into whatever key is lying around on next launch). An unreadable config is
-        NOT fresh (same fail-closed rule there).
+    (ii) fresh install — the RAW config file that the write targets (``config_path``, else
+        ``get_config_path()`` — the exact file ``persist_model_selection`` updates via
+        ``read_user_config_raw``/``atomic_roundtrip_yaml_update``) carries neither
+        ``model.default`` nor ``model.provider``, or does not exist yet (a genuine first
+        run; ``resolve_persist_behavior``'s documented intent: the first pick must persist
+        so it does not evaporate into whatever key is lying around on next launch). The
+        RAW file is the source of truth, never ``load_config()``'s merged view: a managed
+        overlay pinning ``model.*`` would otherwise judge a genuinely fresh file stale, and
+        a merged read that fails open to defaults would judge an unreadable file fresh.
+        Any read/parse failure on an EXISTING file is NOT fresh (fail closed, as
+        ``require_readable_config_before_write`` does for the write itself).
     Everything else refuses; the session-scoped switch itself is unaffected."""
     try:  # an unreadable auth store grants nothing — gate (i) simply sees "no active provider"
         from hermes_cli.auth import get_active_provider
@@ -1884,9 +1892,13 @@ def inferred_provider_persist_refusal(target_provider: str, confirm_hint: str) -
         active = ""
     if active and active == str(target_provider or "").strip().lower():
         return None
+    from pathlib import Path
+    from hermes_cli.config import get_config_path
+    path = Path(config_path) if config_path else get_config_path()
     try:
-        from hermes_cli.config import load_config
-        model_cfg = load_config().get("model")
+        model_cfg = _raw_config_model_block_for_gate(path)
+    except FileNotFoundError:
+        return None  # no file at all — the real first run
     except Exception:
         return _inferred_provider_refusal_message(target_provider, confirm_hint)
     if isinstance(model_cfg, dict):
@@ -1895,6 +1907,22 @@ def inferred_provider_persist_refusal(target_provider: str, confirm_hint: str) -
     elif not model_cfg:
         return None
     return _inferred_provider_refusal_message(target_provider, confirm_hint)
+
+
+def _raw_config_model_block_for_gate(path):
+    """The ``model:`` block of the RAW config file at ``path`` — file present but
+    unreadable/unparseable raises, so the caller can fail closed (freshness of a file we
+    cannot read is unknown, not "fresh"). Deliberately NOT ``read_user_config_raw``: that
+    helper swallows non-``FileNotFoundError`` open errors and non-mapping roots into
+    ``{}`` — fail-open for a write round-trip, wrong for an authorization gate. The parse
+    itself mirrors it byte-for-byte (``fast_safe_load``), so anything the gate calls fresh
+    is exactly what the round-trip writer can read back."""
+    from hermes_cli.config import fast_safe_load
+    with open(path, encoding="utf-8") as f:
+        data = fast_safe_load(f)
+    if data is not None and not isinstance(data, dict):
+        raise TypeError(f"top-level YAML must be a mapping, got {type(data).__name__}")
+    return (data or {}).get("model")
 
 
 def _inferred_provider_refusal_message(target_provider: str, confirm_hint: str) -> str:
@@ -1926,14 +1954,16 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     from pathlib import Path
     from hermes_cli.config import get_config_path, read_user_config_raw
     from utils import atomic_roundtrip_yaml_update
+    # Resolved once: the freshness gate and the write below must judge/update the SAME file
+    # (gateway profiles pass a per-profile ``config_path``, not HERMES_HOME/config.yaml).
+    path = Path(config_path) if config_path else get_config_path()
     # Duck-typed results predate the provenance field (getattr is the established pattern for
     # ModelSwitchResult consumers): a result carrying no provenance is not flagged inferred.
     if getattr(result, "provider_inferred", False) and getattr(result, "provider_changed", False):
         refusal = inferred_provider_persist_refusal(
-            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT)
+            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT, config_path=path)
         if refusal:
             return refusal
-    path = Path(config_path) if config_path else get_config_path()
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
         atomic_roundtrip_yaml_update(path, f"model.{key}", value)
     try:  # owner-only: config files contain API keys

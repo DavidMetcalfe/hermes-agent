@@ -39,12 +39,14 @@ _SEED = (
 )
 
 
-def _seed_home(tmp_path, monkeypatch, config_text=_SEED, *, dashscope: bool):
+def _seed_home(tmp_path, monkeypatch, config_text: str | None = _SEED, *, dashscope: bool):
     """Isolated HERMES_HOME with a seeded config.yaml and a live deepseek session key;
-    the ambient alibaba (DashScope) key is the injected variable under test."""
+    the ambient alibaba (DashScope) key is the injected variable under test.
+    ``config_text=None`` leaves config.yaml ABSENT (a genuine first-run home)."""
     home = tmp_path / "home"
     home.mkdir(parents=True)
-    (home / "config.yaml").write_text(config_text, encoding="utf-8")
+    if config_text is not None:
+        (home / "config.yaml").write_text(config_text, encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.delenv("DASHSCOPE_API_KEY", raising=False)
     monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-session")
@@ -274,36 +276,105 @@ def test_model_names_never_suppress_the_inference_flag():
 def test_unreadable_config_is_not_fresh_and_refuses(tmp_path, monkeypatch):
     """A gate that opened on "the config looks fresh" when the config merely could not be
     read would hand persistence to exactly the route with the least evidence behind it.
-    Mechanism note: this patches ``load_config`` to raise — that IS the documented raise
-    path; a real chmod-000 config.yaml never reaches it because ``load_config`` fails open
-    to a ``FailedConfigRead`` of defaults instead of raising (see T1-fix report)."""
+    Real failure path, no simulation: ``config.yaml`` is a DIRECTORY, so the raw read the
+    freshness clause performs raises (IsADirectoryError through the real config API).
+    Pre-fix this FAILED OPEN: ``load_config`` swallowed the error into a defaults view
+    whose ``model`` block is falsy, and the gate read that as "fresh install"."""
     from hermes_cli.model_switch import inferred_provider_persist_refusal
-    with patch("hermes_cli.config.load_config",
-               side_effect=OSError(13, "Permission denied")), \
-         patch("hermes_cli.auth.get_active_provider", return_value=None):
+    home = tmp_path / "home"
+    home.mkdir(parents=True)
+    (home / "config.yaml").mkdir()  # unreadable as a file — raises through read AND parse
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
         refusal = inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT")
-    assert refusal is not None
+    assert refusal is not None  # a refusal, not an exception escaping the gate
     assert "alibaba" in refusal.lower()
     assert refusal.endswith("CONFIRM-HINT")
+
+    # Explicit config_path is honoured by the freshness clause too (same file the write
+    # would target), and a directory there fails closed the same way.
+    fresh_home = tmp_path / "fresh-home"
+    fresh_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(fresh_home))  # default config absent
+    broken = tmp_path / "gateway-profile" / "config.yaml"
+    broken.mkdir(parents=True)
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
+        refusal = inferred_provider_persist_refusal(
+            "alibaba", "CONFIRM-HINT", config_path=broken)
+    assert refusal is not None and refusal.endswith("CONFIRM-HINT")
+
+# ---------------------------------------------------------------------------
+# (j2) genuinely absent config file → fresh → the first pick persists
+# ---------------------------------------------------------------------------
+
+def test_absent_config_file_is_fresh_and_persists(tmp_path, monkeypatch):
+    """Complement of the directory row: NO config.yaml at all is the real first-run
+    state — freshness must authorize it (and the write creates the file)."""
+    home = _seed_home(tmp_path, monkeypatch, config_text=None, dashscope=True)
+    assert not (home / "config.yaml").exists()
+    with _offline():
+        result = switch_model(
+            raw_input="qwen3.6-plus", current_provider="deepseek", current_model="deepseek-chat",
+            is_global=True)
+    assert result.provider_inferred is True
+    assert persist_model_selection(result) is None
+    block = _model_block(home)
+    assert (block["default"], block["provider"]) == ("qwen3.6-plus", "alibaba")
+
+# ---------------------------------------------------------------------------
+# (k) freshness is judged on the RAW file the write targets, not the merged view
+# ---------------------------------------------------------------------------
+
+def test_freshness_reads_the_written_file_explicit_config_path_honoured(tmp_path, monkeypatch):
+    """The gateway persists to a per-PROFILE ``config_path`` (slash_commands_model.py)
+    while ``HERMES_HOME`` points at the default profile. The gate must judge freshness
+    from the file it will actually write: a configured profile file is NOT fresh even
+    though the default-home config is absent (merged/default view would say fresh)."""
+    from hermes_cli.model_switch import inferred_provider_persist_refusal
+    home = _seed_home(tmp_path, monkeypatch, config_text=None, dashscope=True)
+    assert not (home / "config.yaml").exists()  # default home looks fresh
+    profile = tmp_path / "profile-b" / "config.yaml"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(_SEED, encoding="utf-8")  # configured (NOT fresh) profile file
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
+        refusal = inferred_provider_persist_refusal(
+            "alibaba", "CONFIRM-HINT", config_path=profile)
+    assert refusal is not None
+    assert "alibaba" in refusal.lower()
+
+    # Same call with the profile file's model block emptied → fresh → authorized.
+    profile.write_text("model:\n  persist_switch_by_default: false\n", encoding="utf-8")
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
+        assert inferred_provider_persist_refusal(
+            "alibaba", "CONFIRM-HINT", config_path=profile) is None
+
+    # And the persist path threads it end-to-end: on the CONFIGURED profile file the
+    # refusal is returned and the write touches nothing.
+    profile.write_text(_SEED, encoding="utf-8")
+    with _offline():
+        result = switch_model(
+            raw_input="qwen3.6-plus", current_provider="deepseek", current_model="deepseek-chat",
+            is_global=True)
+    assert result.provider_inferred is True
+    refusal = persist_model_selection(result, config_path=profile)
+    assert isinstance(refusal, str) and refusal
+    assert profile.read_text(encoding="utf-8") == _SEED
 
 # ---------------------------------------------------------------------------
 # Refusal message shape (the shared helper T2 also builds on)
 # ---------------------------------------------------------------------------
 
-def test_refusal_message_names_provider_and_ends_with_the_confirm_hint():
+def test_refusal_message_names_provider_and_ends_with_the_confirm_hint(tmp_path, monkeypatch):
     from hermes_cli.model_switch import inferred_provider_persist_refusal
-    with patch("hermes_cli.config.load_config",
-               return_value={"model": {"default": "x", "provider": "deepseek"}}), \
-         patch("hermes_cli.auth.get_active_provider", return_value=None):
+    _seed_home(tmp_path, monkeypatch, dashscope=False)  # configured (not fresh) home
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
         refusal = inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT")
     assert refusal is not None
     assert "alibaba" in refusal.lower()
     assert refusal.endswith("CONFIRM-HINT")
 
     # Authorized readers: the auth-store active provider is a user selection.
-    with patch("hermes_cli.config.load_config",
-               return_value={"model": {"default": "x", "provider": "deepseek"}}), \
-             patch("hermes_cli.auth.get_active_provider", return_value=" Alibaba "):
+    with patch("hermes_cli.auth.get_active_provider", return_value=" Alibaba "):
         assert inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT") is None
 
 
