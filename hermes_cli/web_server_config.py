@@ -904,6 +904,21 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             if model_val != prev_default and prev_provider:
                 new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
                 if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                    # Credential possession is a CAPABILITY, not a selection (standing ruling,
+                    # PR #107366): the inference ladder above fires on any ambient *_API_KEY,
+                    # and saving the inferred provider here would durably record a route the
+                    # user never named — the incident write class of issue #115079. Refuse
+                    # with 400 unless the shared gate authorizes it (target is the auth-store
+                    # active provider, or the config is fresh); this propagates like the other
+                    # validation rejections in this function (see the HTTPException note above).
+                    from hermes_cli.model_switch import inferred_provider_persist_refusal
+                    refusal = inferred_provider_persist_refusal(
+                        new_provider,
+                        "Pick the provider together with the model on the Models page "
+                        "(or in the chat model picker), or set model.provider explicitly "
+                        "first, then save.")
+                    if refusal:
+                        raise HTTPException(status_code=400, detail=refusal)
                     norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
                     result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
                     disk_model = _apply_main_model_assignment(disk_model, result)
