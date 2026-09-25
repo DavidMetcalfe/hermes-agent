@@ -1321,6 +1321,32 @@ def _names_known_provider(name: str, st: _Switch) -> bool:
         return False
 
 
+def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, st: _Switch) -> bool:
+    """Whether the RAW ``/model`` input itself names ``detected_provider`` — the difference
+    between "the user chose this provider" and "the model name chose it" for step e's
+    provenance (#115079 review): ``/model alibaba`` exits ``detect_provider_for_model``
+    through its NAMING branch (``_PROVIDER_ALIASES`` / vendor-prefix rungs), so the
+    provider DIFF alone must not be read as an inference.
+
+    Named → suppress the flag: a bare id/alias normalizing to the detected provider
+    (``alibaba``, ``dashscope``, ``alibaba-cn``), or a ``provider/model`` / ``provider:model``
+    first token that does — by alias table, then by the same id-or-alias resolution the
+    routing steps use (covers user ``providers.<name>`` blocks). A bare MODEL name
+    (``qwen3.6-plus``) matches neither rung and stays flagged — the incident class the
+    persist gate exists for."""
+    detected = str(detected_provider or "").strip().lower()
+    first_token = str(raw_input or "").strip().lower().split("/", 1)[0].split(":", 1)[0].strip()
+    if not detected or not first_token:
+        return False
+    if normalize_provider(first_token) == detected:
+        return True
+    try:
+        pdef = resolve_provider_full(first_token, st.user_providers, st.custom_providers)
+    except Exception:
+        return False  # fail toward flagged: a doubtful provenance keeps the gate closed
+    return pdef is not None and str(pdef.id).strip().lower() == detected
+
+
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
     """Step d.5: a model declared in user/custom provider config routes there BEFORE
     detect_provider_for_model() guesses from static catalogs and before a soft-accepting current
@@ -1414,8 +1440,12 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
             # credential possession), never from the user — "possessing a credential is
             # not selecting a provider" (#107366 ruling, #115079). Cross-provider only:
             # detect handing back the CURRENT provider is a model rename, not an
-            # inferred route, and stays a plain model-only switch.
-            st.provider_inferred = detected[0] != st.current_provider
+            # inferred route, and stays a plain model-only switch. Nor is a provider the
+            # RAW INPUT names (`/model alibaba` — detect's naming branch): naming it IS
+            # selecting it, so the persist copy's "never selected by you" would be false.
+            st.provider_inferred = (
+                detected[0] != st.current_provider
+                and not _raw_input_names_detected_provider(st.raw_input, detected[0], st))
     return None
 
 

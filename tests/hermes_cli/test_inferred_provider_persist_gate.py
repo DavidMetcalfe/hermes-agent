@@ -213,6 +213,80 @@ def test_env_key_injection_moves_the_provenance_flag_both_ways(tmp_path, monkeyp
 
 
 # ---------------------------------------------------------------------------
+# (h) a TYPED provider name is a selection, not an inference
+# ---------------------------------------------------------------------------
+
+def test_typed_provider_name_is_a_selection_and_persists(tmp_path, monkeypatch):
+    """``/model alibaba`` reaches step e through detect's NAMING branch (models.py:
+    "explicitly named provider: let the credential step report it"), so the provenance
+    check must not read the provider DIFF as inference: naming the provider IS selecting
+    it, provenance stays clean and ``--global`` persists (#115079 review)."""
+    home = _seed_home(tmp_path, monkeypatch, dashscope=True)
+    with _offline():
+        result = switch_model(
+            raw_input="alibaba", current_provider="deepseek", current_model="deepseek-chat",
+            is_global=True)
+    assert result.success is True, result.error_message
+    assert result.target_provider == "alibaba"
+    assert result.provider_inferred is False
+
+    assert persist_model_selection(result) is None
+
+    block = _model_block(home)
+    assert block["provider"] == "alibaba"
+    assert block["default"]  # step 0's bare-provider-name default model, not the old route
+
+# ---------------------------------------------------------------------------
+# (i) the naming helper must NEVER suppress the flag for a bare MODEL name —
+#     that is the incident class rows (a)/(f) keep refusing
+# ---------------------------------------------------------------------------
+
+def test_model_names_never_suppress_the_inference_flag():
+    """Unit-level complement of the (a)/(f) E2E rows: the helper decides provenance, so
+    pin its boundary directly — an alias entry or a ``vendor/``-prefixed first token that
+    resolves to the DETECTED provider counts as named; anything else (above all a bare
+    model name) does not."""
+    from hermes_cli.model_switch import _Switch, _raw_input_names_detected_provider
+    st = _Switch(
+        raw_input="", current_provider="deepseek", current_model="deepseek-chat",
+        current_base_url="", current_api_key="", is_global=True, explicit_provider="",
+        user_providers=None, custom_providers=None)
+    named = [
+        ("alibaba", "alibaba"),           # bare provider id
+        ("DashScope", "alibaba"),         # _PROVIDER_ALIASES entry
+        ("alibaba/qwen3.6-plus", "alibaba"),   # provider/model first token
+        ("alibaba:qwen3.6-plus", "alibaba"),   # vendor:model form (kept raw until step c)
+    ]
+    for raw, detected in named:
+        assert _raw_input_names_detected_provider(raw, detected, st) is True, (raw, detected)
+    not_named = [
+        ("qwen3.6-plus", "alibaba"),      # the incident class: a bare MODEL name
+        ("deepseek-v4.1-flash", "alibaba"),
+        ("deepseek", "alibaba"),          # naming a DIFFERENT provider names nothing here
+    ]
+    for raw, detected in not_named:
+        assert _raw_input_names_detected_provider(raw, detected, st) is False, (raw, detected)
+
+# ---------------------------------------------------------------------------
+# (j) documented fail-closed rule: an unreadable config is NOT a fresh install
+# ---------------------------------------------------------------------------
+
+def test_unreadable_config_is_not_fresh_and_refuses(tmp_path, monkeypatch):
+    """A gate that opened on "the config looks fresh" when the config merely could not be
+    read would hand persistence to exactly the route with the least evidence behind it.
+    Mechanism note: this patches ``load_config`` to raise — that IS the documented raise
+    path; a real chmod-000 config.yaml never reaches it because ``load_config`` fails open
+    to a ``FailedConfigRead`` of defaults instead of raising (see T1-fix report)."""
+    from hermes_cli.model_switch import inferred_provider_persist_refusal
+    with patch("hermes_cli.config.load_config",
+               side_effect=OSError(13, "Permission denied")), \
+         patch("hermes_cli.auth.get_active_provider", return_value=None):
+        refusal = inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT")
+    assert refusal is not None
+    assert "alibaba" in refusal.lower()
+    assert refusal.endswith("CONFIRM-HINT")
+
+# ---------------------------------------------------------------------------
 # Refusal message shape (the shared helper T2 also builds on)
 # ---------------------------------------------------------------------------
 
