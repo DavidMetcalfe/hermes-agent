@@ -135,6 +135,59 @@ class TestSettingsFieldInferredProviderGate:
         assert result["model"]["provider"] == "alibaba"
         assert result["model"]["default"] == "qwen3.6-plus"
 
+    def test_provider_named_flat_input_saves_no_false_400(self, tmp_path, monkeypatch):
+        """F1 (round-1 review BLOCKER): the flat Model field accepts the documented
+        ``provider/model`` form. ``alibaba/qwen3.6-plus`` on an openrouter config resolves
+        through detect's naming branch — the user NAMED the provider, so the CLI's
+        input-naming semantics must exempt it here too. Pre-fix the web gate fired on any
+        detected provider change and answered with the factually FALSE refusal copy
+        ('never selected by you') → HTTP 400 on an explicit input."""
+        _seed_home(tmp_path, monkeypatch, dashscope=True,
+                   config_text="model:\n  default: some-other-model\n  provider: openrouter\n"
+                               "agent:\n  system_prompt: keepme\n")
+
+        with _offline_stack(), mock.patch(
+                "hermes_cli.models.detect_provider_for_model",
+                return_value=("alibaba", "qwen3.6-plus")):
+            result = _denormalize_config_from_web({"model": "alibaba/qwen3.6-plus"})
+
+        assert result["model"]["provider"] == "alibaba"
+        assert result["model"]["default"]  # routed through the assignment chokepoint
+
+    def test_bare_provider_alias_input_saves_no_false_400(self, tmp_path, monkeypatch):
+        """Same exemption via detect's step-0 branch: the flat field value ``alibaba`` IS
+        the provider name (bare alias-form model value) — naming it IS selecting it."""
+        _seed_home(tmp_path, monkeypatch, dashscope=True,
+                   config_text="model:\n  default: some-other-model\n  provider: openrouter\n"
+                               "agent:\n  system_prompt: keepme\n")
+
+        with _offline_stack(), mock.patch(
+                "hermes_cli.models.detect_provider_for_model",
+                return_value=("alibaba", "qwen3.8-max")):
+            result = _denormalize_config_from_web({"model": "alibaba"})
+
+        assert result["model"]["provider"] == "alibaba"
+
+    def test_unnamed_vendor_slug_openrouter_sentinel_still_gated(self, tmp_path, monkeypatch):
+        """Guard row for the exemption's boundary: ``acme/some-model`` names the model's
+        VENDOR, not the aggregator — ``_infer_provider_on_model_change``'s ``openrouter``
+        answer is a credential-gated GUESS, and a guess must still 400 (with openrouter
+        creds ambient, exactly the state where the sentinel fires)."""
+        home = _seed_home(tmp_path, monkeypatch, dashscope=True,
+                          config_text="model:\n  default: some-other-model\n"
+                                      "  provider: deepseek\n"
+                                      "agent:\n  system_prompt: keepme\n")
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-openrouter-ambient")
+        before = (home / "config.yaml").read_bytes()
+
+        with _offline_stack():
+            with pytest.raises(HTTPException) as exc_info:
+                _denormalize_config_from_web({"model": "acme/some-model"})
+
+        assert exc_info.value.status_code == 400
+        assert "openrouter" in str(exc_info.value.detail).lower()
+        assert (home / "config.yaml").read_bytes() == before
+
     def test_fresh_config_without_model_block_passes_through(self, tmp_path, monkeypatch):
         """A config with no ``model:`` block has no provider to displace: the flat string
         passes through unchanged (on THIS surface inference requires a dict model with a

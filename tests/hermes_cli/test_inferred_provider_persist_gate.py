@@ -187,13 +187,78 @@ def test_same_provider_model_only_switch_persists(tmp_path, monkeypatch):
             current_model="deepseek-chat", is_global=True)
     assert result.success is True, result.error_message
     assert result.provider_changed is False
-    # Detection handing back the CURRENT provider is a model rename, not an inferred route.
-    assert result.provider_inferred is False
+    # Round-1 semantics: the flag is PROVENANCE, not a provider CHANGE — detection fired
+    # and the raw input never named the provider, so it reads inferred. The rename still
+    # persists because the persist gate additionally compares the target against the
+    # DISK provider: the write moves no route, so there is nothing to authorize (#115079).
+    assert result.provider_inferred is True
 
     assert persist_model_selection(result) is None
 
     block = _model_block(home)
     assert (block["default"], block["provider"]) == ("deepseek-chat-v2", "deepseek")
+
+
+def test_second_turn_global_persists_no_provider_the_session_inferred(tmp_path, monkeypatch):
+    """F4 (round-1 review) — the turn-2 carryover bypass, the incident's exact class:
+    turn 1 ``/model qwen3.6-plus`` inferred alibaba (session-only, refused); turn 2 types
+    a DIFFERENT bare model with ``--global``. Step e now DETECTS from the current session
+    provider (alibaba — already inferred, nothing the user named), the old cross-provider
+    condition reads "no provider change" → the flag was not set → the write made the
+    inferred provider durable with no user naming. The flag is now provenance-only and
+    the persist gate compares the TARGET against the DISK provider, so the write is
+    refused and the disk keeps ``openrouter``."""
+    home = _seed_home(
+        tmp_path, monkeypatch,
+        "model:\n  default: some-other-model\n  provider: openrouter\n", dashscope=True)
+    with _offline(), patch(
+            "hermes_cli.model_switch.list_provider_models", return_value=[]), patch(
+            "hermes_cli.models.detect_provider_for_model",
+            return_value=("alibaba", "qwen3.6-max")):
+        # Production fires detect on the LIVE-catalog hit (``current_provider_catalog_match``)
+        # or the static ladder; the rows patch the same seams the sibling rename row (e) uses
+        # (step d's aggregator catalog patched empty so turn 1 reaches step e like production).
+        # Turn 1: inferred route, session-scoped (never persisted — refused by the gate).
+        turn1 = switch_model(
+            raw_input="qwen3.6-plus", current_provider="openrouter",
+            current_model="some-other-model", is_global=False)
+        assert turn1.success is True, turn1.error_message
+        assert turn1.target_provider == "alibaba" and turn1.provider_inferred is True
+        # Turn 2: same session (provider is now alibaba), a different model, --global.
+        turn2 = switch_model(
+            raw_input="qwen3.6-max", current_provider="alibaba",
+            current_model="qwen3.6-plus", is_global=True)
+    assert turn2.success is True, turn2.error_message
+    assert turn2.target_provider == "alibaba"
+    # Pre-fix this was False (cross-provider term dropped the provenance on turn 2).
+    assert turn2.provider_inferred is True, "carryover turn must keep the inferred provenance"
+
+    refusal = persist_model_selection(turn2)
+
+    assert isinstance(refusal, str) and refusal and "alibaba" in refusal.lower()
+    block = _model_block(home)
+    assert block["provider"] == "openrouter"  # pre-fix: rewritten to alibaba
+    assert block["default"] == "some-other-model"
+
+
+def test_explicit_flag_over_ambient_key_persists_carryover_target(tmp_path, monkeypatch):
+    """Companion guard to the carryover row: ``--provider`` IS a selection — the same
+    target the refusal above blocks must persist when the user names the provider on the
+    command line, even with the ambient key present and a different provider on disk."""
+    home = _seed_home(
+        tmp_path, monkeypatch,
+        "model:\n  default: some-other-model\n  provider: openrouter\n", dashscope=True)
+    with _offline():
+        result = switch_model(
+            raw_input="qwen3.6-max", current_provider="alibaba",
+            current_model="qwen3.6-plus", is_global=True, explicit_provider="alibaba")
+    assert result.success is True, result.error_message
+    assert result.provider_inferred is False
+
+    assert persist_model_selection(result) is None
+
+    block = _model_block(home)
+    assert (block["default"], block["provider"]) == ("qwen3.6-max", "alibaba")
 
 
 # ---------------------------------------------------------------------------
@@ -463,6 +528,38 @@ def test_refusal_message_names_provider_and_ends_with_the_confirm_hint(tmp_path,
     # Authorized readers: the auth-store active provider is a user selection.
     with patch("hermes_cli.auth.get_active_provider", return_value=" Alibaba "):
         assert inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT") is None
+
+def test_refusal_message_collapses_trailing_hint_whitespace(tmp_path, monkeypatch):
+    """GPT-OSS review nit: a surface passing a hint with trailing whitespace must not
+    weld a double space (or a dangling newline) onto the shared message."""
+    from hermes_cli.model_switch import inferred_provider_persist_refusal
+    _seed_home(tmp_path, monkeypatch, dashscope=False)  # configured (not fresh) home
+    with patch("hermes_cli.auth.get_active_provider", return_value=None):
+        refusal = inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT  \n ")
+    assert refusal is not None
+    assert refusal.endswith("CONFIRM-HINT")  # pre-fix: ended with the raw trailing run
+    assert "  " not in refusal  # one space joins body and hint, never two
+
+# ---------------------------------------------------------------------------
+# F2 (round-1 review): gate (i) must compare CANONICAL provider ids
+# ---------------------------------------------------------------------------
+
+def test_auth_store_alias_form_active_provider_authorizes(tmp_path, monkeypatch):
+    """The auth store writes ``active_provider`` in whatever form the login flow used —
+    an alias like ``dashscope`` — while detect hands back the canonical id (``alibaba``).
+    A user who DID authenticate to that provider must not eat the "never selected by
+    you" refusal because of a spelling difference: the compare goes through
+    ``normalize_provider`` on both sides (#115079 round 1)."""
+    from hermes_cli.model_switch import inferred_provider_persist_refusal
+    _seed_home(tmp_path, monkeypatch, dashscope=False)  # configured (not fresh) home
+    with patch("hermes_cli.auth.get_active_provider", return_value="dashscope"):
+        assert inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT") is None
+    # And the reverse spelling direction resolves the same way.
+    with patch("hermes_cli.auth.get_active_provider", return_value="alibaba"):
+        assert inferred_provider_persist_refusal("dashscope", "CONFIRM-HINT") is None
+    # A genuinely different provider stays refused (no alias bridge for strangers).
+    with patch("hermes_cli.auth.get_active_provider", return_value="openrouter"):
+        assert inferred_provider_persist_refusal("alibaba", "CONFIRM-HINT") is not None
 
 
 # ---------------------------------------------------------------------------

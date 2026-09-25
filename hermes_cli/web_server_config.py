@@ -918,16 +918,31 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     # validation rejections in this function (see the HTTPException note above).
                     # The gate is called with no config_path because this handler runs inside
                     # the profile scope whose contextvar-resolved get_config_path() is the same
-                    # path save_config writes (config.py:2435) — a future caller OUTSIDE a
-                    # profile scope must thread config_path through explicitly.
-                    from hermes_cli.model_switch import inferred_provider_persist_refusal
-                    refusal = inferred_provider_persist_refusal(
-                        new_provider,
-                        "Pick the provider together with the model on the Models page "
-                        "(or in the chat model picker), or set model.provider explicitly "
-                        "first, then save.")
-                    if refusal:
-                        raise HTTPException(status_code=400, detail=refusal)
+                    # path the caller's save_config resolves through the same profile-scope
+                    # contextvar — a future caller OUTSIDE a profile scope must thread
+                    # config_path through explicitly.
+                    # Same input-naming semantics as the CLI's step-e provenance: the flat
+                    # Model field accepts the documented ``provider/model`` / bare-provider
+                    # forms, and an input that NAMES the detected provider is a selection —
+                    # gating it answered ``alibaba/qwen3.6-plus`` with the factually false
+                    # "never selected by you" 400 (round-1 review). A ``vendor/model`` slug
+                    # the ladder answers with the openrouter SENTINEL names the vendor, not
+                    # the aggregator — still gated, exactly like the CLI.
+                    from hermes_cli.model_switch import (
+                        inferred_provider_persist_refusal, raw_input_names_detected_provider)
+                    # ``has_model`` above guarantees ``model_val`` is a non-empty str.
+                    named = raw_input_names_detected_provider(
+                        str(model_val), new_provider,
+                        user_providers=disk_cfg.get("providers"),
+                        custom_providers=disk_cfg.get("custom_providers"))
+                    if not named:
+                        refusal = inferred_provider_persist_refusal(
+                            new_provider,
+                            "Pick the provider together with the model on the Models page "
+                            "(or in the chat model picker), or set model.provider explicitly "
+                            "first, then save.")
+                        if refusal:
+                            raise HTTPException(status_code=400, detail=refusal)
                     norm_provider, norm_model = _normalize_main_model_assignment(new_provider, resolved_model)
                     result = _validated_main_model_selection(disk_cfg, norm_provider, norm_model)
                     disk_model = _apply_main_model_assignment(disk_model, result)

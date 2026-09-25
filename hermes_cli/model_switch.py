@@ -1190,8 +1190,10 @@ class _Switch:
     new_model: str = ""
     target_provider: str = ""
     resolved_alias: str = ""
-    # Cross-provider inference from a bare model name (routing step e) — see
-    # :func:`inferred_provider_persist_refusal`; never set by a user-named route.
+    # Inference provenance from routing step e — detection fired and the raw input never
+    # named the provider (same-provider detections included; the persist gate separately
+    # compares the target against the DISK provider). Never set by a user-named route.
+    # See :func:`inferred_provider_persist_refusal`.
     provider_inferred: bool = False
     provider_label: str = ""
     api_key: str = ""
@@ -1321,12 +1323,19 @@ def _names_known_provider(name: str, st: _Switch) -> bool:
         return False
 
 
-def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, st: _Switch) -> bool:
-    """Whether the RAW ``/model`` input itself names ``detected_provider`` — the difference
-    between "the user chose this provider" and "the model name chose it" for step e's
-    provenance (#115079 review): ``/model alibaba`` exits ``detect_provider_for_model``
+def raw_input_names_detected_provider(
+    raw_input: str, detected_provider: str,
+    user_providers: dict | None = None, custom_providers: list | None = None) -> bool:
+    """Whether the RAW model input itself names ``detected_provider`` — the difference
+    between "the user chose this provider" and "the model name chose it" for the persist
+    gates (#115079 review): ``/model alibaba`` exits ``detect_provider_for_model``
     through its NAMING branch (``_PROVIDER_ALIASES`` / vendor-prefix rungs), so the
-    provider DIFF alone must not be read as an inference.
+    provider DIFF alone must not be read as an inference. Shared by the CLI step-e
+    provenance and the dashboard's flat-Model-field gate — the same documented
+    ``provider/model`` input form reaches both surfaces, and gating it on the web side
+    answered an explicitly-named provider with the factually false "never selected by
+    you" 400. ``user_providers`` / ``custom_providers`` feed the configured-provider
+    rung and may be ``None`` (the built-in rungs still work).
 
     Named → suppress the flag: a bare id/alias normalizing to the detected provider
     (``alibaba``, ``dashscope``, ``qwen`` — the latter two normalize to ``alibaba``), or
@@ -1364,10 +1373,17 @@ def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, s
         # Cache-only: this runs on every cross-provider inferred switch and must not
         # block on a models.dev fetch; every user-configured rung is config-based.
         pdef = resolve_provider_full(
-            first_token, st.user_providers, st.custom_providers, allow_network=False)
+            first_token, user_providers, custom_providers, allow_network=False)
     except Exception:
         return False  # fail toward flagged: a doubtful provenance keeps the gate closed
     return pdef is not None and normalize_provider(str(pdef.id).strip().lower()) == detected_norm
+
+
+def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, st: _Switch) -> bool:
+    """``_Switch``-bound view of :func:`raw_input_names_detected_provider` — the step-e
+    provenance call site reads the configured-provider rungs off the routing state."""
+    return raw_input_names_detected_provider(
+        raw_input, detected_provider, st.user_providers, st.custom_providers)
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:
@@ -1461,14 +1477,19 @@ def _route_from_model_input(st: _Switch) -> Optional[ModelSwitchResult]:
             st.target_provider, st.new_model = detected
             # Provenance: this provider came from the model NAME (detect's only gate is
             # credential possession), never from the user — "possessing a credential is
-            # not selecting a provider" (#107366 ruling, #115079). Cross-provider only:
-            # detect handing back the CURRENT provider is a model rename, not an
-            # inferred route, and stays a plain model-only switch. Nor is a provider the
+            # not selecting a provider" (#107366 ruling, #115079). NOT gated on a
+            # provider CHANGE (round-1 review): a carryover turn — an earlier inferred
+            # switch already moved the SESSION provider — detects against that inferred
+            # provider, so the cross-provider term read "no change" and let the next
+            # --global bare-model write make the never-named provider durable. The flag
+            # is provenance only; what a flag-true write costs is decided by the persist
+            # gate's target-vs-DISK-provider compare, which keeps a same-provider model
+            # rename (target == disk) a plain, unrefused switch. Nor is a provider the
             # RAW INPUT names (`/model alibaba` — detect's naming branch): naming it IS
             # selecting it, so the persist copy's "never selected by you" would be false.
-            st.provider_inferred = (
-                detected[0] != st.current_provider
-                and not _raw_input_names_detected_provider(st.raw_input, detected[0], st))
+            # ``--provider`` never reaches step e (PATH A routes ``_route_explicit_provider``).
+            st.provider_inferred = not _raw_input_names_detected_provider(
+                st.raw_input, detected[0], st)
     return None
 
 
@@ -1880,7 +1901,8 @@ def apply_model_selection(model_cfg: Any, result: ModelSwitchResult) -> dict:
 
 
 def inferred_provider_persist_refusal(
-    target_provider: str, confirm_hint: str, config_path: Any = None) -> Optional[str]:
+    target_provider: str, confirm_hint: str, config_path: Any = None,
+    disk_read: "Optional[tuple[str, Any]]" = None) -> Optional[str]:
     """Authorization gate for persisting ``model.provider=<target>`` into config.yaml when the
     provider was INFERRED from a bare model name rather than named by the user (#115079).
 
@@ -1894,8 +1916,10 @@ def inferred_provider_persist_refusal(
     (i) the auth-store ``active_provider`` — written only by login/selection flows
         (``_save_provider_state`` / ``hermes auth add``); ``persist_model_selection`` itself
         never touches auth.json, so this cannot be a self-fulfilling check. Read through the
-        public ``get_active_provider()`` and compared exactly the way the private
-        ``_active_provider_is`` (auth.py) does — trim + casefold.
+        public ``get_active_provider()`` and compared by CANONICAL id: the store may hold the
+        alias spelling the login flow used (``dashscope``) while detection returns the
+        canonical one (``alibaba``) — the same provider the user did authenticate to, so a
+        raw string compare must not refuse it (round-1 review).
     (ii) fresh install — the RAW config file that the write targets (``config_path``, else
         ``get_config_path()`` — the exact file ``persist_model_selection`` updates via
         ``read_user_config_raw``/``atomic_roundtrip_yaml_update``) carries neither
@@ -1907,22 +1931,27 @@ def inferred_provider_persist_refusal(
         a merged read that fails open to defaults would judge an unreadable file fresh.
         Any read/parse failure on an EXISTING file is NOT fresh (fail closed, as
         ``require_readable_config_before_write`` does for the write itself).
-    Everything else refuses; the session-scoped switch itself is unaffected."""
+    Everything else refuses; the session-scoped switch itself is unaffected.
+
+    ``disk_read`` lets a caller that already read the file (``persist_model_selection``
+    judged the route-change question from the same bytes) hand over the
+    :func:`_gate_read_raw_model_block` tuple instead of triggering a second read."""
     try:  # an unreadable auth store grants nothing — gate (i) simply sees "no active provider"
         from hermes_cli.auth import get_active_provider
         active = (get_active_provider() or "").strip().lower()
     except Exception:
         active = ""
-    if active and active == str(target_provider or "").strip().lower():
+    if active and normalize_provider(active) == normalize_provider(str(target_provider or "").strip()):
         return None
     from pathlib import Path
     from hermes_cli.config import get_config_path
     path = Path(config_path) if config_path else get_config_path()
-    try:
-        model_cfg = _raw_config_model_block_for_gate(path)
-    except FileNotFoundError:
+    if disk_read is None:
+        disk_read = _gate_read_raw_model_block(path)
+    status, model_cfg = disk_read
+    if status == "absent":
         return None  # no file at all — the real first run
-    except Exception:
+    if status == "error":
         return _inferred_provider_refusal_message(target_provider, confirm_hint)
     if isinstance(model_cfg, dict):
         if not (model_cfg.get("default") or model_cfg.get("provider")):
@@ -1930,6 +1959,33 @@ def inferred_provider_persist_refusal(
     elif not model_cfg:
         return None
     return _inferred_provider_refusal_message(target_provider, confirm_hint)
+
+
+def _gate_read_raw_model_block(path) -> "tuple[str, Any]":
+    """Three-state form of :func:`_raw_config_model_block_for_gate` —
+    ``('ok', block)`` / ``('absent', None)`` / ``('error', exc)`` — so the persist path
+    can share ONE file read between its route-change compare and the gate's freshness
+    clause without duplicating the exception handling in both callers."""
+    try:
+        return "ok", _raw_config_model_block_for_gate(path)
+    except FileNotFoundError:
+        return "absent", None
+    except Exception as exc:  # fail closed downstream: freshness of an unreadable file is unknown
+        return "error", exc
+
+
+def _persist_moves_provider(disk_read: "tuple[str, Any]", target_provider: str) -> bool:
+    """Whether writing ``model.provider=<target>`` would actually MOVE the on-disk route
+    (round-1 review, #115079): an inferred-provenance result whose target already IS
+    the disk provider persists as a plain model-only write. An unreadable or non-mapping
+    block cannot prove that, so it counts as a move and reaches the gate (fail closed)."""
+    status, block = disk_read
+    if status != "ok" or not isinstance(block, dict):
+        return True
+    disk_provider = str(block.get("provider") or "").strip()
+    if not disk_provider:
+        return True  # no provider on disk: the write INSTALLS one — freshness decides, not this compare
+    return normalize_provider(disk_provider) != normalize_provider(str(target_provider or "").strip())
 
 
 def _raw_config_model_block_for_gate(path):
@@ -1949,6 +2005,9 @@ def _raw_config_model_block_for_gate(path):
 
 
 def _inferred_provider_refusal_message(target_provider: str, confirm_hint: str) -> str:
+    # Hint trimmed before joining (round-1 review): a surface passing trailing whitespace
+    # would otherwise weld a double space / dangling newline onto the shared message.
+    confirm_hint = str(confirm_hint or "").strip()
     return (
         f"Provider '{target_provider}' was inferred from the model name, never selected by you, "
         f"so it was NOT saved to config.yaml — the switch applies to this session only. "
@@ -1982,9 +2041,15 @@ def persist_model_selection(result: ModelSwitchResult, config_path: Any = None) 
     path = Path(config_path) if config_path else get_config_path()
     # Duck-typed results predate the provenance field (getattr is the established pattern for
     # ModelSwitchResult consumers): a result carrying no provenance is not flagged inferred.
-    if getattr(result, "provider_inferred", False) and getattr(result, "provider_changed", False):
+    # The one raw read feeds BOTH questions — does the write MOVE the route (round-1 review:
+    # an inferred route that already matches the disk provider is a model-only write, so a
+    # same-provider rename is never refused), and is the file fresh (the gate's clause) —
+    # so an inferred persist reads the file as many times as it did before.
+    disk_read = _gate_read_raw_model_block(path) if getattr(result, "provider_inferred", False) else None
+    if disk_read is not None and _persist_moves_provider(disk_read, result.target_provider):
         refusal = inferred_provider_persist_refusal(
-            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT, config_path=path)
+            result.target_provider, _INFERRED_PERSIST_CONFIRM_HINT,
+            config_path=path, disk_read=disk_read)
         if refusal:
             return refusal
     for key, value in model_selection_config_updates(result, read_user_config_raw(path).get("model")).items():
