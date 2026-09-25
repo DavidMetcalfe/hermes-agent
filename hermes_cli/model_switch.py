@@ -1329,22 +1329,31 @@ def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, s
     provider DIFF alone must not be read as an inference.
 
     Named → suppress the flag: a bare id/alias normalizing to the detected provider
-    (``alibaba``, ``dashscope``, ``alibaba-cn``), or a ``provider/model`` / ``provider:model``
-    first token that does — by alias table, then by the same id-or-alias resolution the
-    routing steps use (covers user ``providers.<name>`` blocks). A bare MODEL name
-    (``qwen3.6-plus``) matches neither rung and stays flagged — the incident class the
-    persist gate exists for."""
+    (``alibaba``, ``dashscope``, ``qwen`` — the latter two normalize to ``alibaba``), or
+    a ``provider/model`` / ``provider:model`` first token that does — by alias table,
+    then by the same id-or-alias resolution the routing steps use (covers user
+    ``providers.<name>`` blocks). BOTH sides of every comparison are normalized:
+    detect names providers through ``_PROVIDER_ALIASES`` (``moonshot`` → ``kimi-coding``)
+    while ``normalize_provider`` collapses both sides to the models.dev canonical
+    (``kimi-for-coding``); comparing one normalized side against the other's raw id
+    false-refuses every divergent key (``moonshot``/``zen``/``github``/``kilo-code``).
+    A bare MODEL name (``qwen3.6-plus``) matches neither rung and stays flagged — the
+    incident class the persist gate exists for."""
     detected = str(detected_provider or "").strip().lower()
+    detected_norm = normalize_provider(detected)
     first_token = str(raw_input or "").strip().lower().split("/", 1)[0].split(":", 1)[0].strip()
     if not detected or not first_token:
         return False
-    if normalize_provider(first_token) == detected:
+    if normalize_provider(first_token) == detected_norm:
         return True
     try:
-        pdef = resolve_provider_full(first_token, st.user_providers, st.custom_providers)
+        # Cache-only: this runs on every cross-provider inferred switch and must not
+        # block on a models.dev fetch; every user-configured rung is config-based.
+        pdef = resolve_provider_full(
+            first_token, st.user_providers, st.custom_providers, allow_network=False)
     except Exception:
         return False  # fail toward flagged: a doubtful provenance keeps the gate closed
-    return pdef is not None and str(pdef.id).strip().lower() == detected
+    return pdef is not None and normalize_provider(str(pdef.id).strip().lower()) == detected_norm
 
 
 def _route_configured_provider(st: _Switch) -> Optional[ModelSwitchResult] | bool:

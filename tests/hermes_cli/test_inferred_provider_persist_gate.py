@@ -258,6 +258,14 @@ def test_model_names_never_suppress_the_inference_flag():
         ("DashScope", "alibaba"),         # _PROVIDER_ALIASES entry
         ("alibaba/qwen3.6-plus", "alibaba"),   # provider/model first token
         ("alibaba:qwen3.6-plus", "alibaba"),   # vendor:model form (kept raw until step c)
+        # The two alias tables diverge on these keys: detect names the provider under
+        # its _PROVIDER_ALIASES id, providers.ALIASES normalizes BOTH that id and the
+        # typed token to a third (models.dev) canonical. Both sides must be
+        # normalized before comparing, or the typed name reads as un-selected.
+        ("moonshot", "kimi-coding"),      # both normalize to kimi-for-coding
+        ("zen", "opencode-zen"),          # both normalize to opencode
+        ("github", "copilot"),            # both normalize to github-copilot
+        ("kilo-code", "kilocode"),        # both normalize to kilo
     ]
     for raw, detected in named:
         assert _raw_input_names_detected_provider(raw, detected, st) is True, (raw, detected)
@@ -265,6 +273,8 @@ def test_model_names_never_suppress_the_inference_flag():
         ("qwen3.6-plus", "alibaba"),      # the incident class: a bare MODEL name
         ("deepseek-v4.1-flash", "alibaba"),
         ("deepseek", "alibaba"),          # naming a DIFFERENT provider names nothing here
+        ("kimi-k2.5", "kimi-coding"),     # a bare MODEL name from the SAME alias family
+        ("alibaba-cn", "alibaba"),        # a DISTINCT id, not an alias of alibaba
     ]
     for raw, detected in not_named:
         assert _raw_input_names_detected_provider(raw, detected, st) is False, (raw, detected)
