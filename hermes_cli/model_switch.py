@@ -1346,6 +1346,20 @@ def _raw_input_names_detected_provider(raw_input: str, detected_provider: str, s
         return False
     if normalize_provider(first_token) == detected_norm:
         return True
+    # providers.ALIASES and the catalog table detect NAMES through are different
+    # tables (round-3 residual): ``google``→``gemini`` / ``google-vertex``→``vertex``
+    # exist only in ``models_catalog_static._PROVIDER_ALIASES`` — the exact table
+    # detect's NAMING branch fires through (models.py step 0). The models.dev rung of
+    # the resolver below can also SHADOW them: models.dev lists ``google`` as its own
+    # provider id, so the resolved pdef id is the alias and never equals ``gemini``.
+    # Bridging the catalog table here (one hop, then re-normalized so a divergent
+    # canonical like ``moonshot``→``kimi-coding``→``kimi-for-coding`` keeps working)
+    # mirrors detect's naming source WITHOUT touching the global ``normalize_provider``
+    # routing tables — an unknown token normalizes to itself and stays flagged.
+    from hermes_cli.models import _PROVIDER_ALIASES as _CATALOG_PROVIDER_ALIASES
+    catalog_hop = _CATALOG_PROVIDER_ALIASES.get(first_token, first_token)
+    if normalize_provider(catalog_hop) == detected_norm:
+        return True
     try:
         # Cache-only: this runs on every cross-provider inferred switch and must not
         # block on a models.dev fetch; every user-configured rung is config-based.

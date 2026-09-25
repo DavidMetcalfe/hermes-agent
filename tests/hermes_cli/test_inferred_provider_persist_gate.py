@@ -266,6 +266,11 @@ def test_model_names_never_suppress_the_inference_flag():
         ("zen", "opencode-zen"),          # both normalize to opencode
         ("github", "copilot"),            # both normalize to github-copilot
         ("kilo-code", "kilocode"),        # both normalize to kilo
+        # providers.ALIASES does not bridge these at all — detect names them through
+        # the catalog table (models_catalog_static._PROVIDER_ALIASES) and the plugin
+        # profiles, so the helper must consult that naming source too (round-3 review).
+        ("google", "gemini"),             # catalog alias google → gemini
+        ("google-vertex", "vertex"),      # catalog alias google-vertex → vertex
     ]
     for raw, detected in named:
         assert _raw_input_names_detected_provider(raw, detected, st) is True, (raw, detected)
@@ -278,6 +283,65 @@ def test_model_names_never_suppress_the_inference_flag():
     ]
     for raw, detected in not_named:
         assert _raw_input_names_detected_provider(raw, detected, st) is False, (raw, detected)
+
+def test_models_dev_alias_provider_ids_still_count_as_named(monkeypatch):
+    """Round-3 residual: models.dev ITSELF lists ``google`` and ``google-vertex`` as
+    provider ids, so ``resolve_provider_full`` resolves the typed name to the pdef whose
+    id is the alias (source ``models.dev``), never reaching the plugin-profile rung that
+    reports ``gemini``/``vertex``. detect's NAMING branch still fires through the catalog
+    table — so the helper must bridge that same naming source or the user who typed the
+    provider's own name eats the 'never selected by you' refusal with the wrong copy.
+    Reproduces production reality: every populated install serves the models.dev cache.
+    """
+    from hermes_cli.model_switch import _Switch, _raw_input_names_detected_provider
+
+    class _MDevInfo:
+        def __init__(self, name):
+            self.name, self.env, self.api, self.doc = name, (), f"https://{name}.test/v1", ""
+
+    def shadowed(name, allow_network=True):
+        # mirrors the real cached models.dev entry for these two keys (probed 2026-09)
+        return _MDevInfo(name) if name in ("google", "google-vertex") else None
+
+    monkeypatch.setattr("agent.models_dev.get_provider_info", shadowed)
+    st = _Switch(
+        raw_input="", current_provider="deepseek", current_model="deepseek-chat",
+        current_base_url="", current_api_key="", is_global=True, explicit_provider="",
+        user_providers=None, custom_providers=None)
+    for raw, detected in [("google", "gemini"), ("google-vertex", "vertex")]:
+        assert _raw_input_names_detected_provider(raw, detected, st) is True, (raw, detected)
+    # fail-toward-flagged is unchanged under the shadow: an unknown token stays flagged
+    assert _raw_input_names_detected_provider("googlex", "gemini", st) is False
+
+def test_registry_alias_sweep_every_naming_key_counts_as_named():
+    """Round-3 sweep guard: the catalog alias table is detect's OWN naming source
+    (``detect_static_provider_for_model`` step 0), so EVERY key whose naming branch
+    actually fires must read as NAMED in the persist-gate helper — no per-key bridges.
+    A future alias added to the table stays covered by construction; a bare model name
+    is still never named (guard row at the end)."""
+    from hermes_cli.model_switch import _Switch, _raw_input_names_detected_provider
+    from hermes_cli.models import (
+        _PROVIDER_ALIASES, _PROVIDER_LABELS, _PROVIDER_MODELS,
+        detect_static_provider_for_model)
+
+    st = _Switch(
+        raw_input="", current_provider="deepseek", current_model="deepseek-chat",
+        current_base_url="", current_api_key="", is_global=True, explicit_provider="",
+        user_providers=None, custom_providers=None)
+    checked = 0
+    for alias, canonical in _PROVIDER_ALIASES.items():
+        if canonical in {"custom", "openrouter"}:
+            continue  # step 0 refuses to name these: naming branch cannot fire
+        if canonical not in _PROVIDER_LABELS or not _PROVIDER_MODELS.get(canonical):
+            continue  # no label/catalog: step 0 cannot fire
+        detected = detect_static_provider_for_model(alias, "deepseek")
+        if not detected or detected[0] != canonical:
+            continue  # naming branch did not fire for this key
+        checked += 1
+        assert _raw_input_names_detected_provider(alias, canonical, st) is True, (alias, canonical)
+    assert checked >= 70, f"sweep vacuous: only {checked} naming keys checked of {len(_PROVIDER_ALIASES)}"
+    # the incident class survives the sweep: a bare MODEL name is still flagged
+    assert _raw_input_names_detected_provider("qwen3.6-plus", "alibaba", st) is False
 
 # ---------------------------------------------------------------------------
 # (j) documented fail-closed rule: an unreadable config is NOT a fresh install
