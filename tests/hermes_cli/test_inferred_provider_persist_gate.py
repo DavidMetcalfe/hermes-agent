@@ -26,6 +26,19 @@ import yaml
 
 from hermes_cli.model_switch import ModelSwitchResult, persist_model_selection, switch_model
 
+# cli and tui_gateway.server are imported at COLLECTION time (upstream pattern:
+# test_chat_q_exit_clear.py:8, test_audio_playback_guard.py:35), not inside the
+# test bodies. Their import triggers hermes_bootstrap's PM dependency activation,
+# which probes the PM payload manifest at <checkout-parent>/manifest.json — from a
+# git worktree under ~/.hermes/worktrees that probe sits inside the guarded root
+# and the real-home tripwire refuses it (the trip is PM's own environment
+# resolution, not Hermes state I/O, and it fires identically on plain origin/main;
+# see tests/hermes_cli/test_apply_model_switch_result_context.py running
+# per-test-import from a worktree). Collection precedes the guard fixture, so the
+# probe runs unguarded exactly like every other cli-importing test file.
+import cli  # noqa: E402
+from tui_gateway import server as _tui_server  # noqa: E402
+
 _ACCEPTED = {"accepted": True, "persist": True, "recognized": True, "message": None}
 
 # A configured (NOT fresh) install: deepseek is the standing route, and an ambient
@@ -464,7 +477,6 @@ def _refusing_result(**overrides) -> ModelSwitchResult:
 
 
 def test_cli_surface_prints_the_refusal_instead_of_a_saved_line(tmp_path, monkeypatch):
-    import cli
     from hermes_cli import cli_model_switch_mixin as mixin
     printed: list[str] = []
     monkeypatch.setattr(cli, "_cprint", lambda *a, **k: printed.append(" ".join(map(str, a))))
@@ -524,7 +536,7 @@ def test_gateway_surface_reports_the_refusal_as_the_global_error(tmp_path, monke
 
 def test_tui_surface_propagates_the_refusal_into_the_switch_warning(tmp_path, monkeypatch):
     _seed_home(tmp_path, monkeypatch, dashscope=False)  # HERMES_HOME + config sandbox
-    from tui_gateway import server
+    server = _tui_server  # collection-time import (see module header)
     result = _refusing_result(warning_message="pre-existing warning")
     monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **kw: result)
     monkeypatch.setattr(
