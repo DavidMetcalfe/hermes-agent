@@ -903,7 +903,12 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
             prev_provider = str(disk_model.get("provider") or "").strip()
             if model_val != prev_default and prev_provider:
                 new_provider, resolved_model = _infer_provider_on_model_change(model_val, prev_provider)
-                if new_provider and new_provider.strip().lower() != prev_provider.lower():
+                # Compare CANONICAL ids: disk may hold an alias form of the same provider
+                # (``provider: qwen`` ≡ ``alibaba``); a raw compare would read the ladder
+                # handing back the canonical spelling as a provider CHANGE and fire the gate
+                # below on an edit that moves no provider (a false 400).
+                from hermes_cli.models import normalize_provider
+                if new_provider and normalize_provider(new_provider) != normalize_provider(prev_provider):
                     # Credential possession is a CAPABILITY, not a selection (standing ruling,
                     # PR #107366): the inference ladder above fires on any ambient *_API_KEY,
                     # and saving the inferred provider here would durably record a route the
@@ -911,6 +916,10 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
                     # with 400 unless the shared gate authorizes it (target is the auth-store
                     # active provider, or the config is fresh); this propagates like the other
                     # validation rejections in this function (see the HTTPException note above).
+                    # The gate is called with no config_path because this handler runs inside
+                    # the profile scope whose contextvar-resolved get_config_path() is the same
+                    # path save_config writes (config.py:2435) — a future caller OUTSIDE a
+                    # profile scope must thread config_path through explicitly.
                     from hermes_cli.model_switch import inferred_provider_persist_refusal
                     refusal = inferred_provider_persist_refusal(
                         new_provider,

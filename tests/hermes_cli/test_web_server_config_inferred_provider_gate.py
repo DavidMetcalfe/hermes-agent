@@ -163,6 +163,28 @@ class TestSettingsFieldInferredProviderGate:
         assert result["model"]["default"] == "deepseek-chat-v2"
         assert result["model"]["provider"] == "deepseek"
 
+    def test_alias_form_provider_same_provider_edit_saves_no_false_400(
+            self, tmp_path, monkeypatch):
+        """Alias-form provider on disk must not read as a provider change (review polish).
+        ``normalize_provider('qwen') == 'alibaba'`` (providers._ALIAS_GROUPS); with the disk
+        holding the ALIAS form (``provider: qwen``), a model edit the ladder resolves back to
+        the same provider (typed model alias ``qwen`` → MODEL_ALIASES → alibaba's
+        ``qwen3.8-max``) is the false-positive: the raw compare read ``'alibaba' != 'qwen'``
+        as a change and the gate refused a save that moves no provider. Comparing canonical
+        ids, this edit takes the SAME path a canonical-form ``provider: alibaba`` disk takes:
+        fire condition false → default updated verbatim, provider untouched, no 400."""
+        _seed_home(
+            tmp_path, monkeypatch, dashscope=True,
+            config_text="model:\n  default: qwen3.6-plus\n  provider: qwen\n"
+                        "agent:\n  system_prompt: keepme\n")
+
+        with _offline_stack():
+            result = _denormalize_config_from_web({"model": "qwen"})
+
+        assert result["model"]["provider"] == "qwen"  # same provider after normalize — no move
+        assert result["model"]["default"] == "qwen"   # typed value preserved, verbatim,
+        # exactly as the canonical-form ('alibaba' on disk) row of the same edit writes.
+
     def test_unchanged_model_save_is_unaffected(self, tmp_path, monkeypatch):
         """The Settings autosave PUTs the whole draft: saving an unrelated field with the
         model echoed back must not trip inference at all."""
