@@ -138,11 +138,19 @@ export function setSidebarNavHidden(ids: readonly string[]): void {
 
 /** The Settings checkbox / context-menu row's action. Unknown ids are inert on
  *  removal and appended on addition — the store holds whatever the user hides,
- *  and an id whose row later returns is simply filtered again. */
+ *  and an id whose row later returns is simply filtered again. Trimmed up
+ *  front: the includes check must see the same form `setSidebarNavHidden`
+ *  stores, or `' messaging '` would miss and re-append as a silent no-op. */
 export function toggleSidebarNavHidden(id: string): void {
+  const cleanId = id.trim()
+
+  if (!cleanId) {
+    return
+  }
+
   const hidden = $sidebarNavHidden.get()
 
-  setSidebarNavHidden(hidden.includes(id) ? hidden.filter(entry => entry !== id) : [...hidden, id])
+  setSidebarNavHidden(hidden.includes(cleanId) ? hidden.filter(entry => entry !== cleanId) : [...hidden, cleanId])
 }
 
 /** Drop the user's hidden rows from a nav list. Pure like `applySidebarNavPrefs`

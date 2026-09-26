@@ -5,7 +5,7 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { $sidebarNavHidden, SIDEBAR_NAV_IDS, toggleSidebarNavHidden } from '@/store/sidebar-nav'
+import { $sidebarNavHidden, setSidebarNavHidden, SIDEBAR_NAV_IDS } from '@/store/sidebar-nav'
 
 import { ListRow } from './primitives'
 
@@ -59,9 +59,16 @@ export function SidebarNavRowsSetting() {
               <Checkbox
                 aria-label={row.label}
                 checked={!hidden.has(row.id)}
-                onCheckedChange={() => {
+                onCheckedChange={checked => {
                   triggerHaptic('selection')
-                  toggleSidebarNavHidden(row.id)
+                  // Honor Radix's explicit target state instead of blind-toggling:
+                  // an assistive-tech event already carries the intended state, and
+                  // setting it keeps repeated or out-of-order events idempotent.
+                  const hiddenIds = $sidebarNavHidden.get()
+
+                  setSidebarNavHidden(
+                    checked === true ? hiddenIds.filter(id => id !== row.id) : [...hiddenIds, row.id]
+                  )
                 }}
               />
               {row.label}

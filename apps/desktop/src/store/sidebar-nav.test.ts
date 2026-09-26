@@ -160,6 +160,20 @@ describe('user-side row visibility (#119965)', () => {
     expect($sidebarNavHidden.get()).toEqual(['unknown'])
   })
 
+  // The includes check must see the trimmed form `setSidebarNavHidden` stores:
+  // an untrimmed `' b '` used to miss the match, re-append, and collapse back
+  // on clean — a silent no-op where a toggle was intended. Blank ids do
+  // nothing at all.
+  it('toggleSidebarNavHidden trims the id before matching, and ignores blank ids', () => {
+    setSidebarNavHidden(['b'])
+
+    toggleSidebarNavHidden(' b ')
+    expect($sidebarNavHidden.get()).toEqual([])
+
+    expect(() => toggleSidebarNavHidden('  ')).not.toThrow()
+    expect($sidebarNavHidden.get()).toEqual([])
+  })
+
   // A stored value is hand-editable: the decode must sanitize like the setter.
   // Fresh import (resetModules) so the atom seeds from the polluted record.
   it('the atom decodes a hand-edited storage value down to clean ids', async () => {
