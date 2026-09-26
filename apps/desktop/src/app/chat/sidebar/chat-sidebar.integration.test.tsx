@@ -23,7 +23,7 @@ import {
   $workspaceCwdOwner
 } from '@/store/session'
 import { $removedSessionIds } from '@/store/session-removal'
-import { $sidebarNavHidden, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
+import { $sidebarNavHidden, SIDEBAR_NAV_IDS, SIDEBAR_NAV_PREFS_AREA } from '@/store/sidebar-nav'
 import { makeSessionInfo } from '@/test/session-info'
 
 import { type AppView, ROUTES_AREA, SIDEBAR_NAV_AREA } from '../../routes'
@@ -228,10 +228,14 @@ describe('ChatSidebar user-hidden nav rows', () => {
 
     const navIds = () => [...root.querySelectorAll<HTMLElement>('[data-nav-id]')].map(node => node.dataset.navId)
 
-    expect(navIds()).toEqual(['new-session', 'capabilities', 'messaging', 'artifacts', 'cron'])
+    // Exact equality against the store's canonical list: a core row added to
+    // `SIDEBAR_NAV` without joining `SIDEBAR_NAV_IDS` (or vice versa) fails
+    // here, which is what keeps Settings (it consumes the same list) pinned
+    // to what the sidebar actually renders.
+    expect(navIds()).toEqual([...SIDEBAR_NAV_IDS])
 
     act(() => $sidebarNavHidden.set(['messaging']))
-    expect(navIds()).toEqual(['new-session', 'capabilities', 'artifacts', 'cron'])
+    expect(navIds()).toEqual(SIDEBAR_NAV_IDS.filter(id => id !== 'messaging'))
     expect(root.querySelector('[data-nav-id="messaging"]')).toBeNull()
   })
 

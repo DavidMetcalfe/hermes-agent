@@ -5,14 +5,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { SIDEBAR_NAV_AREA } from '@/app/routes'
 import { registry } from '@/contrib/registry'
 import { en } from '@/i18n/en'
-import { $sidebarNavHidden, setSidebarNavHidden } from '@/store/sidebar-nav'
+import { $sidebarNavHidden, setSidebarNavHidden, SIDEBAR_NAV_IDS } from '@/store/sidebar-nav'
 
 import { SETTINGS_MANIFEST } from './settings-manifest'
 import { SidebarNavRowsSetting } from './sidebar-nav-rows-setting'
 
 const a = en.settings.appearance
 const NAV_LABELS: Record<string, string> = en.sidebar.nav
-const BUILT_INS = ['new-session', 'capabilities', 'messaging', 'artifacts', 'cron']
+// The component's built-in list IS the store's canonical list — sourced from
+// it, not re-literalled, so these assertions track the binding, not a copy.
+const BUILT_INS: readonly string[] = SIDEBAR_NAV_IDS
 
 const disposers: Array<() => void> = []
 

@@ -8,6 +8,7 @@ import {
   applySidebarNavPrefs,
   applyUserNavHidden,
   setSidebarNavHidden,
+  SIDEBAR_NAV_IDS,
   SIDEBAR_NAV_PREFS_AREA,
   toggleSidebarNavHidden
 } from './sidebar-nav'
@@ -19,6 +20,16 @@ const prefs = (id: string, data: { hide?: string[]; order?: string[] }, order?: 
   data,
   id,
   order
+})
+
+describe('SIDEBAR_NAV_IDS', () => {
+  // Cheap invariant on the canonical core-id list the Settings row list and
+  // the sidebar-render test both bind to: a duplicate or blank id would
+  // silently break that binding (a Settings toggle naming nothing).
+  it('is a duplicate-free list of non-empty strings', () => {
+    expect(new Set(SIDEBAR_NAV_IDS).size).toBe(SIDEBAR_NAV_IDS.length)
+    SIDEBAR_NAV_IDS.forEach(id => expect(typeof id === 'string' && id.trim() !== '').toBe(true))
+  })
 })
 
 describe('applySidebarNavPrefs', () => {

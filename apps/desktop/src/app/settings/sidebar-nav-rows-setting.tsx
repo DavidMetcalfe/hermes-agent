@@ -5,15 +5,15 @@ import { Checkbox } from '@/components/ui/checkbox'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { $sidebarNavHidden, toggleSidebarNavHidden } from '@/store/sidebar-nav'
+import { $sidebarNavHidden, SIDEBAR_NAV_IDS, toggleSidebarNavHidden } from '@/store/sidebar-nav'
 
 import { ListRow } from './primitives'
 
 // Every built-in row is listed even when the current Interface mode rests it:
 // hiding is the user's choice, independent of mode (#119965), so a hide made
 // while a row is mode-shadowed must persist for when the mode shows it again.
-// The order mirrors the sidebar's own nav list.
-const BUILT_IN_IDS = ['new-session', 'capabilities', 'messaging', 'artifacts', 'cron'] as const
+// The ids are the store's canonical core list — the same list the rendered
+// sidebar is pinned to by test — so Settings can never drift from the sidebar.
 
 /**
  * Per-row sidebar visibility: one checkbox per nav row (built-ins first, then
@@ -32,7 +32,7 @@ export function SidebarNavRowsSetting() {
   const navContributions = useContributions(SIDEBAR_NAV_AREA)
 
   const rows = [
-    ...BUILT_IN_IDS.map(id => ({ id: id as string, label: t.sidebar.nav[id] })),
+    ...SIDEBAR_NAV_IDS.map(id => ({ id: id as string, label: t.sidebar.nav[id] })),
     ...navContributions.flatMap(contribution => {
       const data = contribution.data as Partial<SidebarNavContribution> | undefined
 

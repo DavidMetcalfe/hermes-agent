@@ -24,6 +24,12 @@ import { arraysEqual } from '@/lib/storage'
 // applies to what remains — a row the user hid is simply not there for a
 // contribution to revive.
 
+/** The core rows' ids — the one canonical list the docs above already
+ *  enumerate. The Settings row list consumes this, and the rendered sidebar is
+ *  pinned to it by test, so adding a core row without listing it here breaks a
+ *  test instead of silently desyncing Settings from the sidebar. */
+export const SIDEBAR_NAV_IDS = ['new-session', 'capabilities', 'messaging', 'artifacts', 'cron'] as const
+
 export const SIDEBAR_NAV_PREFS_AREA = 'sidebarNav.prefs'
 
 /** Payload (`data`) of a `sidebarNav.prefs` contribution. Ids are the nav rows'
