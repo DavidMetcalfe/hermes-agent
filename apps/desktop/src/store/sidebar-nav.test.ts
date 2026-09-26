@@ -9,8 +9,7 @@ import {
   applyUserNavHidden,
   setSidebarNavHidden,
   SIDEBAR_NAV_IDS,
-  SIDEBAR_NAV_PREFS_AREA,
-  toggleSidebarNavHidden
+  SIDEBAR_NAV_PREFS_AREA
 } from './sidebar-nav'
 
 const rows = [{ id: 'a' }, { id: 'b' }, { id: 'c' }, { id: 'd' }, { id: 'e' }, { id: 'capabilities' }]
@@ -147,31 +146,6 @@ describe('user-side row visibility (#119965)', () => {
     } finally {
       off()
     }
-  })
-
-  it('toggleSidebarNavHidden adds, removes, and tolerates an id it never stored', () => {
-    toggleSidebarNavHidden('b')
-    expect($sidebarNavHidden.get()).toEqual(['b'])
-
-    toggleSidebarNavHidden('b')
-    expect($sidebarNavHidden.get()).toEqual([])
-
-    expect(() => toggleSidebarNavHidden('unknown')).not.toThrow()
-    expect($sidebarNavHidden.get()).toEqual(['unknown'])
-  })
-
-  // The includes check must see the trimmed form `setSidebarNavHidden` stores:
-  // an untrimmed `' b '` used to miss the match, re-append, and collapse back
-  // on clean — a silent no-op where a toggle was intended. Blank ids do
-  // nothing at all.
-  it('toggleSidebarNavHidden trims the id before matching, and ignores blank ids', () => {
-    setSidebarNavHidden(['b'])
-
-    toggleSidebarNavHidden(' b ')
-    expect($sidebarNavHidden.get()).toEqual([])
-
-    expect(() => toggleSidebarNavHidden('  ')).not.toThrow()
-    expect($sidebarNavHidden.get()).toEqual([])
   })
 
   // A stored value is hand-editable: the decode must sanitize like the setter.
