@@ -4,6 +4,7 @@ import { SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
 import { Checkbox } from '@/components/ui/checkbox'
 import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
+import { triggerHaptic } from '@/lib/haptics'
 import { $sidebarNavHidden, toggleSidebarNavHidden } from '@/store/sidebar-nav'
 
 import { ListRow } from './primitives'
@@ -58,7 +59,10 @@ export function SidebarNavRowsSetting() {
               <Checkbox
                 aria-label={row.label}
                 checked={!hidden.has(row.id)}
-                onCheckedChange={() => toggleSidebarNavHidden(row.id)}
+                onCheckedChange={() => {
+                  triggerHaptic('selection')
+                  toggleSidebarNavHidden(row.id)
+                }}
               />
               {row.label}
             </label>
