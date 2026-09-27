@@ -98,6 +98,14 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
         return _fail(f"hermes send: failed to read channel directory: {exc}")
     platforms = dict(raw.get("platforms") or {})
 
+    # The directory file lags a brand-new DM by up to one rebuild interval (#48303), and
+    # `--list` assembles its own platforms view, so the formatter's disk-path merge never
+    # fires here — run it ourselves before filtering/serialising to cover every mode.
+    # Order matters: merge BEFORE the setdefault below, so the merge only ever sees the
+    # directory's own keys. A setdefault-ed platform is connected but undiscovered; handing
+    # it to the merge would advertise session targets that resolve_channel_name's
+    # connected-only gate (#60574 key-presence check) still refuses to resolve.
+    merge_session_channels(platforms)
     # Merge in configured-but-undiscovered platforms (e.g. a fresh SimpleX setup used only for
     # outbound sends) so `--list` never hides a working send target.
     try:
@@ -108,10 +116,6 @@ def _list_targets(platform_filter: Optional[str], *, json_mode: bool) -> int:
                 platforms.setdefault(plat_name, [])
     except Exception:
         pass  # directory contents alone are still useful; don't fail --list on a config problem
-    # The directory file lags a brand-new DM by up to one rebuild interval (#48303), and
-    # `--list` assembles its own platforms view, so the formatter's disk-path merge never
-    # fires here — run it ourselves before filtering/serialising to cover every mode.
-    merge_session_channels(platforms)
     if platform_filter:
         key = platform_filter.strip().lower()
         filtered = {k: v for k, v in platforms.items() if k.lower() == key}

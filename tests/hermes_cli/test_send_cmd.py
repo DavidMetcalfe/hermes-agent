@@ -293,6 +293,53 @@ def test_list_merges_session_dm_into_stale_directory(tmp_path, monkeypatch, caps
     assert rc == 0
     assert any(entry["id"] == dm_chat_id for entry in payload["platforms"]["discord"])
 
+def test_list_never_advertises_session_targets_under_undiscovered_platform(
+    tmp_path, monkeypatch, capsys
+):
+    """A connected platform absent from the directory renders its empty-state hint, never
+    session-derived names — the resolver's connected-only gate refuses them (#48303, #60574).
+
+    `_list_targets` setdefaults connected-but-undiscovered platforms after loading the
+    directory; the session merge must run on the directory's own keys only, or `--list`
+    advertises targets `resolve_channel_name` then refuses (list/resolve divergence).
+    """
+    directory = tmp_path / "channel_directory.json"
+    directory.write_text(json.dumps({"updated_at": None, "platforms": {
+        "telegram": [{"id": "1", "name": "general", "type": "channel"}],
+    }}))
+    sessions = tmp_path / "sessions" / "sessions.json"
+    sessions.parent.mkdir(parents=True)
+    sessions.write_text(json.dumps({
+        "s_discord_dm": {"origin": {"platform": "discord", "chat_id": "9001",
+                                    "chat_name": "alice-dm"}, "chat_type": "dm"},
+    }))
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("gateway.channel_directory.DIRECTORY_PATH", directory)
+    monkeypatch.setattr("gateway.channel_directory.CHANNEL_ALIASES_PATH",
+                        tmp_path / "no-aliases.json")
+
+    class _FakeGwConfig:
+        def get_connected_platforms(self):
+            return ["telegram", "discord"]
+
+    monkeypatch.setattr("gateway.config.load_gateway_config", lambda: _FakeGwConfig())
+
+    rc = send_cmd._list_targets(None, json_mode=False)
+    out = capsys.readouterr().out
+    assert rc == 0
+    # discord is connected but absent from the directory: hint, never the session DM name.
+    assert "discord:alice-dm" not in out
+    assert "no channels discovered yet" in out
+    # ...and `--list` and the resolver agree on what resolving that name does.
+    from gateway.channel_directory import resolve_channel_name
+    assert resolve_channel_name("discord", "alice-dm") is None
+    # json mode: no phantom discord key with session entries either
+    rc = send_cmd._list_targets(None, json_mode=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["platforms"].get("discord") == []
+
 # ---------------------------------------------------------------------------
 # Parser registration contract
 # ---------------------------------------------------------------------------
