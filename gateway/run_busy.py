@@ -1194,6 +1194,10 @@ class GatewayBusySessionMixin:
         update_id <= that value (Telegram's numeric ordering) or with the same message_id is a
         redelivery when this process booted from that restart; otherwise the marker must be < 5
         minutes old.
+
+        Deliberate broadening: when the dedup marker is missing, the one-shot ``_booted_from_restart``
+        (<60s) suppression now also applies to message-id-only events (previously Telegram/update-id
+        events only) — same one-shot tradeoff, so a later legitimate /restart is still honored.
         """
         from gateway.run import _hermes_home
         if event is None or event.source is None:
@@ -1231,12 +1235,14 @@ class GatewayBusySessionMixin:
         if data.get("platform") != event_platform:
             return False
         if update_id is not None:
-            # Numeric ordering only makes sense on Telegram's monotonically increasing update ids;
-            # other adapters dedup on message_id equality below.
+            # Numeric ordering only makes sense on Telegram's monotonically increasing update ids.
+            # Only Telegram stamps update ids today; any other adapter's event takes the
+            # message_id equality branch below.
+            recorded_uid = data.get("update_id")
             if (
                 event_platform != "telegram"
-                or not isinstance(data.get("update_id"), int)
-                or update_id > data["update_id"]
+                or not isinstance(recorded_uid, int)
+                or update_id > recorded_uid
             ):
                 return False
         else:

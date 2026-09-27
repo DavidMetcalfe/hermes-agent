@@ -541,10 +541,10 @@ class GatewaySlashCommandsMixin(
         # where every fresh gateway re-restarts.
         if self._is_stale_restart_redelivery(event):
             src = event.source
-            logger.info("Ignoring redelivered /restart (platform=%s, update_id=%s) — "
+            logger.info("Ignoring redelivered /restart (platform=%s, id=%s) — "
                         "already processed by a previous gateway instance.",
                         src.platform.value if src and src.platform else "?",
-                        event.platform_update_id)
+                        event.platform_update_id if event.platform_update_id is not None else event.message_id)
             return ""
         if self._restart_requested or self._draining:
             count = self._running_agent_count()

@@ -1,9 +1,11 @@
-"""Tests for /restart idempotency guard against Telegram update re-delivery.
+"""Tests for /restart idempotency against update/message re-delivery.
 
-When PTB's graceful-shutdown ACK call (the final `get_updates` on exit) fails
-with a network error, Telegram re-delivers the `/restart` message to the new
-gateway process.  Without a dedup guard, the new gateway would process
-`/restart` again and immediately restart — a self-perpetuating loop.
+Telegram: when PTB's graceful-shutdown ACK call (the final `get_updates` on exit)
+fails with a network error, Telegram re-delivers the `/restart` message to the
+new gateway process.  Adapters without update ids (Discord/Slack) retry the
+identical webhook payload, so dedup keys on the message id instead (#121325).
+Without a dedup guard, the new gateway would process `/restart` again and
+immediately restart — a self-perpetuating loop.
 """
 import json
 import time
@@ -300,3 +302,47 @@ async def test_marker_missing_but_booted_from_restart_ignores_redelivery(tmp_pat
     assert runner._booted_from_restart is False
 
 
+@pytest.mark.asyncio
+async def test_int_message_id_coerced_to_str_matches_on_replay(tmp_path, monkeypatch):
+    """An int message_id is str()-coerced in the marker and matches an int replay (#121325)."""
+    from gateway.config import Platform
+    from gateway.session import SessionSource
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    discord_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="discord-chan",
+        chat_type="dm",
+        user_id="u1",
+    )
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=discord_source,
+        message_id=9876543210123,  # int, not str — adapters may pass raw ints
+        platform_update_id=None,
+    )
+    await runner._handle_restart_command(event)
+
+    data = json.loads((tmp_path / ".restart_last_processed.json").read_text(encoding="utf-8"))
+    assert data["message_id"] == "9876543210123"
+    assert isinstance(data["message_id"], str)
+
+    # Replay with the same int message_id — guard matches across int→str coercion.
+    runner.request_restart = MagicMock()
+    replay = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=discord_source,
+        message_id=9876543210123,
+        platform_update_id=None,
+    )
+    result = await runner._handle_restart_command(replay)
+
+    assert result == ""
+    runner.request_restart.assert_not_called()
