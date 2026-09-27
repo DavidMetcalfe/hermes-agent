@@ -711,16 +711,40 @@ class CodexAppServerSession:
     }
 
     def _run_approval_callback(self, auto_approve: bool, prompt: Callable[[], tuple[str, str]], log_label: str) -> str:
-        """Protocol routing only: auto-approve, fail-closed without a callback, else ask via ``prompt()``.
+        """Protocol routing only: auto-approve, fail-closed without a callback, resolve
+        single-query sessions through the shared gate, else ask via ``prompt()``.
 
         Approval mode/timeout resolution lives upstream (codex_runtime.py derives the
-        auto flags; the callback runs the shared gate). Do not re-read config here.
+        auto flags; the callback runs the shared gate). Do not re-read ``approvals.*``
+        config here — the shared gate is the single source of policy truth.
         """
         if auto_approve:
             return "accept"
         if self._approval_callback is None:
             return "decline"
         command, description = prompt()
+        try:
+            from tools.approval_context import _is_single_query_approval_context
+            single_query = _is_single_query_approval_context()
+        except Exception:
+            logger.exception("single-query approval context lookup failed on %s", log_label)
+            return "decline"
+        if single_query:
+            # -q has nobody to answer the panel below: it would park for the full
+            # approvals.timeout and then decline (#121296). Resolve through the same
+            # shared gate the terminal tool uses (approvals.single_query_mode: deny
+            # blocks dangerous commands and allows safe ones; approve allows).
+            try:
+                from tools.approval import check_all_command_guards
+                result = check_all_command_guards(command, "local")
+            except Exception:
+                logger.exception("single-query approval gate raised on %s", log_label)
+                return "decline"
+            if not result.get("approved"):
+                logger.warning("codex %s denied in single-query mode: %s",
+                               log_label, result.get("message") or "blocked by approval gate")
+                return "decline"
+            return "accept"
         try:
             choice = self._approval_callback(command, description, allow_permanent=False)
             return _approval_choice_to_codex_decision(choice)

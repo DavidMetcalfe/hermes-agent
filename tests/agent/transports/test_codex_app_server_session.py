@@ -711,6 +711,71 @@ class TestServerRequestRouting:
         s.run_turn("hi", turn_timeout=0.2)
         assert ("r1", {"decision": "accept"}) in client.responses
 
+    def test_single_query_exec_resolves_from_gate_without_prompting(self, monkeypatch):
+        """#121296: in `hermes chat -q` nobody can answer the CLI panel, so the
+        bridge must resolve exec approvals through the shared gate instead of
+        parking on the prompt for approvals.timeout."""
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        client = FakeClient()
+        client.queue_server_request("item/commandExecution/requestApproval", request_id="r1",
+                                    command="echo Q", cwd="/tmp")
+        client.queue_notification("turn/completed", threadId="t",
+                                  turn={"id": "tu1", "status": "completed", "error": None})
+        calls = []
+
+        def cb(command, description, *, allow_permanent=True):
+            calls.append(command)
+            return "once"
+
+        s = make_session(client, approval_callback=cb)
+        s.run_turn("hi", turn_timeout=5.0)
+        assert calls == [], "single-query must never reach the interactive panel callback"
+        assert ("r1", {"decision": "accept"}) in client.responses
+
+    def test_single_query_dangerous_exec_declined_without_prompting(self, monkeypatch):
+        """single_query_mode (default deny) must still decline a catastrophic command —
+        immediately, and without waking the interactive panel."""
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        client = FakeClient()
+        client.queue_server_request("item/commandExecution/requestApproval", request_id="r2",
+                                    command="rm -rf /", cwd="/")
+        client.queue_notification("turn/completed", threadId="t",
+                                  turn={"id": "tu1", "status": "completed", "error": None})
+        calls = []
+
+        def cb(command, description, *, allow_permanent=True):
+            calls.append(command)
+            return "once"
+
+        s = make_session(client, approval_callback=cb)
+        s.run_turn("hi", turn_timeout=5.0)
+        assert calls == [], "single-query must never reach the interactive panel callback"
+        assert ("r2", {"decision": "decline"}) in client.responses
+
+    def test_single_query_apply_patch_resolves_without_prompting(self, monkeypatch):
+        """Sibling path: item/fileChange/requestApproval goes through the same
+        `_run_approval_callback` and must not park in -q either."""
+        monkeypatch.setenv("HERMES_SINGLE_QUERY_SESSION", "1")
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        client = FakeClient()
+        client.queue_server_request("item/fileChange/requestApproval", request_id="r3",
+                                    itemId="fc-1", turnId="tu1", threadId="t",
+                                    startedAtMs=1234567890, reason="apply some changes")
+        client.queue_notification("turn/completed", threadId="t",
+                                  turn={"id": "tu1", "status": "completed", "error": None})
+        calls = []
+
+        def cb(command, description, *, allow_permanent=True):
+            calls.append(command)
+            return "once"
+
+        s = make_session(client, approval_callback=cb)
+        s.run_turn("hi", turn_timeout=5.0)
+        assert calls == [], "single-query must never reach the interactive panel callback"
+        assert ("r3", {"decision": "accept"}) in client.responses
+
 
 
 # ---- enriched approval prompts ----
