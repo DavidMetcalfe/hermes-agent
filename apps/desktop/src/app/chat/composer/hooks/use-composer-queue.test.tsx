@@ -303,6 +303,41 @@ describe('useComposerQueue park integration', () => {
     expect(queued[0]?.attachments).toHaveLength(1)
   })
 
+  it('refuses saving a queued-entry edit into a no-payload slash+attachment combo (#131233)', () => {
+    const attachment: ComposerAttachment = {
+      id: 'file:handoff.md',
+      kind: 'file',
+      label: 'handoff.md',
+      path: '/Users/alice/handoff.md',
+      refText: '@file:`/Users/alice/handoff.md`'
+    }
+
+    const entry = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment], text: 'original draft' })!
+
+    // The sibling refusal: editing the queued entry into a known no-payload
+    // command + attachment would leave an entry that can only ever return
+    // false at drain, so the save is refused and the entry stays as it was.
+    const { draftRef, hook } = renderQueueHook({ attachments: [attachment] })
+
+    act(() => {
+      hook.result.current.beginQueuedEdit(entry)
+    })
+
+    // beginQueuedEdit loads the entry's text into the composer; the edit is
+    // then typed over with a no-payload command.
+    draftRef.current = '/status'
+
+    act(() => {
+      expect(hook.result.current.exitQueuedEdit('save')).toBe(false)
+    })
+
+    const queued = getQueuedPrompts(SESSION_KEY)
+
+    expect(queued).toHaveLength(1)
+    expect(queued[0]?.text).toBe('original draft')
+    expect($notifications.get().some(notification => notification.kind === 'warning')).toBe(true)
+  })
+
   it('a delivered steer lifts the park so the rest of the queue flows', async () => {
     const steerable = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'redirect' })
     enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'follows after' })
