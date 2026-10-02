@@ -1602,6 +1602,68 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
     $queuedPromptsBySession.set({})
   })
 
+  it('carries attachments onto the busy-session kickoff queue entry (#131233)', async () => {
+    // The /goal busy path parks the kickoff through queueKickoffIfSessionBusy.
+    // The dispatch marks the attachments consumed, so the post-dispatch rehome
+    // is skipped — the QUEUE ENTRY is the only thing carrying them. Dropping
+    // them here (hardcoded []) makes the drain submit with nothing: the
+    // attachment vanishes with no rehome to recover it.
+    $queuedPromptsBySession.set({})
+    $composerAttachments.set([])
+    publishSessionState(RUNTIME_SESSION_ID, {
+      ...createClientSessionState(RUNTIME_SESSION_ID),
+      busy: true
+    })
+
+    const busyRef = { current: true }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === SLASH_METRIC) {
+        return {} as never
+      }
+
+      if (method === 'slash.exec') {
+        return {
+          type: 'send',
+          notice: '⊙ Goal set (20-turn budget): ship the release notes',
+          message: 'ship the release notes'
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        busyRef={busyRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/goal ship the release notes', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    const queued = getQueuedPrompts(RUNTIME_SESSION_ID)
+
+    expect(queued.map(entry => entry.text)).toEqual(['ship the release notes'])
+    expect(queued[0]?.attachments.map(attachment => attachment.id)).toEqual(['file:handoff.md'])
+
+    dropSessionState(RUNTIME_SESSION_ID)
+    $queuedPromptsBySession.set({})
+  })
+
   it('tells the user how to stop the reply when the busy kickoff cannot queue (#42093)', async () => {
     // The queue key resolves blank (a stored id that is only whitespace, so
     // `enqueueQueuedPrompt` trims it to null) — the one reachable 'busy'
@@ -6411,6 +6473,43 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     expect($notifications.get()).toEqual(
       expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
     )
+  })
+
+  it('a fromQueue drain dispatches a no-payload command instead of livelocking the queue (#131233)', async () => {
+    // An entry that was enqueued as an unknown/prompt-taking command can be
+    // reclassified as a no-payload surface after a catalog sync. The drain
+    // carries `fromQueue`, and the entry guard must let it through: refusing
+    // returns false, use-composer-queue keeps the entry at the head, and every
+    // later auto-drain fails the same way — the queue never advances.
+    $composerAttachments.set([])
+    clearNotifications()
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/status', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ],
+      fromQueue: true
+    })
+
+    // Dispatched, not refused — the drain advances, and the post-dispatch check
+    // re-homes the unconsumed attachment rather than dropping it.
+    expect(ok).toBe(true)
+    expect($composerAttachments.get()).toHaveLength(1)
+
+    $composerAttachments.set([])
   })
 
   it('threads attachments through a prompt-taking slash dispatch instead of refusing (#131233)', async () => {
