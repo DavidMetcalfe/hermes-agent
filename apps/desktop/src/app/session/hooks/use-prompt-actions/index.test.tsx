@@ -6371,19 +6371,225 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     )
   })
 
-  it('refuses a slash command sent alongside an attachment instead of silently degrading to a chat message (#81798)', async () => {
-    // The attachment's refText gets prepended ahead of the typed text by
-    // buildContextText, so the merged wire text no longer starts with "/".
-    // Before the fix, submitText's attachment-count gate silently fell through
-    // to a normal prompt.submit — /goal (and every other slash command) with an
-    // attachment vanished into a regular chat message with no feedback.
+  it('refuses a no-payload slash command sent alongside an attachment instead of silently degrading to a chat message (#81798, #131233)', async () => {
+    // Known client-side no-payload surfaces (here /status, an `rpc` surface)
+    // are classified BEFORE dispatch: warn-and-refuse, nothing runs, and
+    // dispatchSubmit's restore path keeps the draft + attachment intact.
+    // Prompt-taking commands no longer take this branch — they thread their
+    // attachments through dispatch (next tests, #131233).
     const requestGateway = vi.fn(async (method: string) => {
-      if (method === 'slash.exec') {
-        throw new Error('slash.exec must never be called when an attachment is present')
+      if (method === 'slash.exec' || method === 'session.status' || method === 'command.dispatch') {
+        throw new Error('the no-payload guard must refuse before any dispatch')
       }
 
       if (method === 'prompt.submit') {
         throw new Error('prompt.submit must never be called for a slash command')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/status', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
+    )
+  })
+
+  it('threads attachments through a prompt-taking slash dispatch instead of refusing (#131233)', async () => {
+    // Isolate from prior tests' composer state — the dispatch below consumes
+    // and re-stages attachments, so a leftover would corrupt later suites.
+    $composerAttachments.set([])
+    // Remote gateway pattern (see 'uploads file bytes via file.attach'): the
+    // fake client-disk path must upload through file.attach before prompt.submit.
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'command.dispatch') {
+        return { type: 'send', message: 'align with the handoff doc', notice: '⊙ Goal set' } as never
+      }
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/remote/work/.hermes/desktop-attachments/handoff.md',
+          ref_text: '@file:.hermes/desktop-attachments/handoff.md',
+          uploaded: true
+        } as never
+      }
+
+      if (method === 'slash.exec') {
+        throw new Error('no slash worker — fall through to command.dispatch')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/goal align with the handoff doc', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith('command.dispatch', expect.objectContaining({ name: 'goal' }))
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: expect.stringContaining('@file:') }),
+      1_800_000
+    )
+
+    $connection.set(null)
+  })
+
+  it('re-homes unconsumed attachments after an output-only dispatch (#131233)', async () => {
+    // An unknown command executes and produces only inline output — nothing
+    // consumed the attachment, so the post-dispatch check must put it back in
+    // the composer and warn, instead of dropping it silently (#81798 class).
+    $composerAttachments.set([])
+
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/frobnicate now', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect($composerAttachments.get()).toHaveLength(1)
+    expect($notifications.get()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
+    )
+
+    // Don't leak the re-homed attachment into later suites (they sync whatever
+    // is staged in the store, and this fixture path does not exist).
+    $composerAttachments.set([])
+  })
+
+  it('stages attachments with a prefilled draft — re-homed silently, no warning (#131233)', async () => {
+    // prefill deliberately leaves the attachments staged next to the prefilled
+    // draft: the next non-slash send carries both together, so the post-dispatch
+    // warning must stay quiet (Contract C6).
+    $composerAttachments.set([])
+    clearNotifications()
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'command.dispatch') {
+        return { message: 'restore the backed-up text', type: 'prefill' } as never
+      }
+
+      if (method === 'slash.exec') {
+        throw new Error('no slash worker — fall through to command.dispatch')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/undo', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect($composerDraft.get()).toBe('restore the backed-up text')
+    expect($composerAttachments.get()).toHaveLength(1)
+    expect(requestGateway).not.toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    expect($notifications.get()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
+    )
+
+    $composerAttachments.set([])
+  })
+
+  it('returns false on a rejected send and leaves restore to the caller (#131233)', async () => {
+    // Contract C2: false only when a send dispatch was rejected. The tail must
+    // NOT re-home in that case — dispatchSubmit's restore owns the draft and
+    // attachments, and a duplicate re-home would double-load them.
+    $composerAttachments.set([])
+    clearNotifications()
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'command.dispatch') {
+        return { message: 'align with the handoff doc', type: 'send' } as never
+      }
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/remote/work/.hermes/desktop-attachments/handoff.md',
+          ref_text: '@file:.hermes/desktop-attachments/handoff.md',
+          uploaded: true
+        } as never
+      }
+
+      if (method === 'slash.exec') {
+        throw new Error('no slash worker — fall through to command.dispatch')
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('gateway rejected the prompt')
       }
 
       return {} as never
@@ -6407,10 +6613,81 @@ describe('usePromptActions stale multi-window guard (#65047)', () => {
     })
 
     expect(ok).toBe(false)
-    expect(requestGateway).not.toHaveBeenCalled()
-    expect($notifications.get()).toEqual(
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    // Tail re-home suppressed: nothing landed in the store for the caller's
+    // restore to conflict with, and no misleading warning fired.
+    expect($composerAttachments.get()).toHaveLength(0)
+    expect($notifications.get()).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ message: en.desktop.slashCommandIgnoredBody })])
     )
+
+    $connection.set(null)
+  })
+
+  it('threads attachments through alias re-dispatch (#131233)', async () => {
+    // An alias resolves via a second dispatch — ctx.attachments must survive
+    // the recursive runSlash hop (Contract C3).
+    $composerAttachments.set([])
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    let dispatches = 0
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'command.dispatch') {
+        dispatches += 1
+
+        return dispatches === 1
+          ? ({ target: 'goal', type: 'alias' } as never)
+          : ({ message: 'align with the handoff doc', type: 'send' } as never)
+      }
+
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/remote/work/.hermes/desktop-attachments/handoff.md',
+          ref_text: '@file:.hermes/desktop-attachments/handoff.md',
+          uploaded: true
+        } as never
+      }
+
+      if (method === 'slash.exec') {
+        throw new Error('no slash worker — fall through to command.dispatch')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    const ok = await handle!.submitText('/forward align with the handoff doc', {
+      attachments: [
+        {
+          id: 'file:handoff.md',
+          kind: 'file',
+          label: 'handoff.md',
+          path: '/Users/alice/handoff.md',
+          refText: '@file:`/Users/alice/handoff.md`'
+        }
+      ]
+    })
+
+    expect(ok).toBe(true)
+    expect(dispatches).toBe(2)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ text: expect.stringContaining('@file:') }),
+      1_800_000
+    )
+
+    $connection.set(null)
+    $composerAttachments.set([])
   })
 })
 
