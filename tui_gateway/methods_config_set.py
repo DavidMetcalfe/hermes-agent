@@ -271,14 +271,22 @@ def _tui_policy_write(key: str, value: str) -> None:
     the operator grant and provides the sanctioned marker frame required by the
     writer.
 
-    The stamp ALSO requires the JSON-RPC transport to be bound in THIS process
-    (``tui_gateway.transport.current_transport()`` — bound only by the live gateway
-    entry point). An agent kernel is a separate subprocess that never binds a
-    transport, so importing and calling this funnel directly cannot mint the grant
-    (controller probe: kernel-child direct call minted under frame-only checking).
+    The stamp requires PROVENANCE, not just a bound transport: the transport bound
+    in THIS process must be registered in ``tui_gateway.transport``'s live-transport
+    set, which only ``entry.main()`` (stdio RPC) and ``ws.handle_ws()`` (a real
+    ``ws.accept()``) populate. ``bind_transport()`` is a public ContextVar setter and
+    accepts any object, so ``current_transport() is not None`` alone was
+    caller-mintable (#104697 round-6 review): a worker doing
+    ``bind_transport(object())`` satisfied it. A fresh agent-kernel or terminal
+    subprocess starts with an EMPTY live set, so binding an arbitrary object there
+    is refused. Deliberate in-process mutation of the set itself remains possible
+    and is the disclosed residual — the same capability as writing config.yaml
+    directly, which the file-tools deny and execute_code integrity (#113459) guard
+    at the file layer instead. Pinned inverse:
+    tests/tui_gateway/test_approvals_policy_chokepoint.py.
     """
-    from tui_gateway.transport import current_transport
-    if current_transport() is None:
+    from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS, current_transport
+    if current_transport() not in _POLICY_WRITE_TRANSPORTS:
         raise RuntimeError(
             "TUI policy write requires the live gateway RPC transport; "
             "direct calls are not sanctioned")

@@ -1,7 +1,7 @@
 """Tests for TUI approvals-policy chokepoint and raw-writer bypass guard (#104697 P1-B)."""
 
 import pytest
-import yaml
+import hermes_yaml as yaml
 
 from tui_gateway import server, transport
 from tui_gateway.methods_config_set import _tui_policy_write
@@ -10,8 +10,9 @@ from hermes_cli.config import _LOAD_CONFIG_CACHE, _RAW_CONFIG_CACHE
 
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
-    """Isolated real config store for TUI policy tests, with a bound RPC transport
-    (the live gateway dispatch loop binds one; agent kernel subprocesses never do)."""
+    """Isolated real config store for TUI policy tests, with the transport
+    registered the way ``entry.main()`` registers it (the live gateway dispatch
+    loop; agent kernel subprocesses start with an empty live set)."""
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     config_file = home / "config.yaml"
@@ -23,7 +24,9 @@ def isolated_home(tmp_path, monkeypatch):
     _LOAD_CONFIG_CACHE.clear()
     _RAW_CONFIG_CACHE.clear()
     token = transport.bind_transport(server._stdio_transport)
+    transport._POLICY_WRITE_TRANSPORTS.add(server._stdio_transport)
     yield config_file
+    transport._POLICY_WRITE_TRANSPORTS.discard(server._stdio_transport)
     transport.reset_transport(token)
     server._cfg_cache = server._cfg_mtime = server._cfg_path = None
     _LOAD_CONFIG_CACHE.clear()
@@ -57,6 +60,42 @@ def test_tui_policy_write_without_transport_refused(isolated_home):
         assert (cfg.get("approvals") or {}).get("mode") == "smart"
     finally:
         transport.reset_transport(reset_token)
+
+
+def test_forged_object_transport_refused(isolated_home):
+    """The exact #104697 round-6 exploit: ``bind_transport()`` is a public
+    ContextVar setter, so binding a bare object and calling the funnel directly
+    must be refused at the real store boundary with config bytes unchanged."""
+    initial_bytes = isolated_home.read_bytes()
+
+    reset_token = transport.bind_transport(object())  # type: ignore[arg-type] -- deliberate forge
+    try:
+        with pytest.raises(RuntimeError, match="requires the live gateway RPC transport"):
+            _tui_policy_write("approvals.mode", "off")
+    finally:
+        transport.reset_transport(reset_token)
+
+    assert isolated_home.read_bytes() == initial_bytes
+    cfg = yaml.safe_load(isolated_home.read_text(encoding="utf-8"))
+    assert (cfg.get("approvals") or {}).get("mode") == "smart"
+
+
+def test_forged_real_transport_instance_refused(isolated_home):
+    """Constructing a genuine StdioTransport is also refused: only transports
+    registered by the live accept paths (entry.main / ws.handle_ws) pass the
+    provenance check, not merely well-typed ones."""
+    import threading
+
+    forged = transport.StdioTransport(lambda: None, threading.Lock())
+    reset_token = transport.bind_transport(forged)
+    try:
+        with pytest.raises(RuntimeError, match="requires the live gateway RPC transport"):
+            _tui_policy_write("approvals.mode", "off")
+    finally:
+        transport.reset_transport(reset_token)
+
+    cfg = yaml.safe_load(isolated_home.read_text(encoding="utf-8"))
+    assert (cfg.get("approvals") or {}).get("mode") == "smart"
 
 
 def test_tui_sanctioned_policy_write_persists(isolated_home):
