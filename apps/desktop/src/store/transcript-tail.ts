@@ -227,9 +227,12 @@ export function recordTranscriptTail(
  * offset-0 page, so every further click re-fetches rows the store already
  * holds, the merge is an identity, and the button never retires.
  *
- * Paging state may only ADVANCE through this path. It never regresses in
- * offset and never re-arms `possiblyTruncated` — the one sanctioned re-arm is
- * `rewindTranscriptTail` (transcript retention), which writes its own entry.
+ * Paging state may only ADVANCE through this path. An incoming page may not
+ * re-arm or rewind a tail whose offset already reaches as far — the one
+ * sanctioned re-arm is `rewindTranscriptTail` (transcript retention), which
+ * writes its own entry. A page that DOES reach further (a session that outgrew
+ * a previously complete tail) is adopted, so a transcript growing past one page
+ * still arms the offer for the rows nobody has loaded.
  */
 function withoutPagingRegression(
   existing: TranscriptTailState | undefined,
@@ -239,9 +242,7 @@ function withoutPagingRegression(
     return incoming
   }
 
-  const regressed =
-    incoming.possiblyTruncated &&
-    (!existing.possiblyTruncated || incoming.nextOffset < existing.nextOffset)
+  const regressed = incoming.possiblyTruncated && incoming.nextOffset <= existing.nextOffset
 
   if (!regressed) {
     return incoming

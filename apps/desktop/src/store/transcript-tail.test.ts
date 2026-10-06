@@ -245,4 +245,17 @@ describe('recordTranscriptTail does not regress paging progress (#133569)', () =
 
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 286, possiblyTruncated: false })
   })
+
+  it('re-arms a previously complete tail that the session outgrew', () => {
+    // The whole transcript was one short page: 8 rows, nothing older.
+    recordTranscriptTail('s1', advancedPage(0, 8))
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 8, possiblyTruncated: false })
+
+    // The session kept going and now spans more than a page. The fresh read
+    // reaches FURTHER than the recorded state, so it is progress, not a
+    // regression: rows nobody has loaded exist and the offer must come back.
+    recordTranscriptTail('s1', page(10))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
+  })
 })
