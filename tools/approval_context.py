@@ -343,22 +343,24 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
 # The ONLY mechanism that authorizes mutating a security-policy config key is a
 # one-shot grant stamped by a HUMAN-ACTOR code path and CONSUMED by the writer:
 #
-#   grant_operator_policy_write(actor) → token → consume_operator_policy_write()
+#   grant_operator_policy_write() → token → reset_operator_policy_write(token)
 #
-# Both ends are here, and the writer additionally requires a human-actor CONTEXT.
-# Why this shape (and not a parameter, an env var, or a reusable boolean scope):
-# the #104697 review established that any *reusable* importable token is forgeable
-# by the agent process that can import the writer (#104059 class). A one-shot grant
-# is forgeable too — agent-executed Python in-process CAN call the granter — so the
-# writer's CONTEXT check is the load-bearing half: the granter is only invoked by
-# the sanctioned human-actor paths, the grant is single-use (minted and consumed
-# within one write), and the context check refuses in any headless agent context
-# (cron / -q / unattended / detector-approved child processes). The gateway branch
-# of the context check was REMOVED after round-2 review: a gateway backend process
-# is exactly where agent turns run, so "platform env set" proves nothing about a
-# human — the gateway /approvals path instead runs the writer with a grant stamped
-# AFTER its enabled-admin-policy check (the human is the authenticated sender of
-# the slash command), and the grant is consumed before any agent code can race it.
+# Both ends are here, and the writer additionally requires a SANCTIONED CALLER
+# FRAME (a human-input handler frame on the live stack — see
+# hermes_cli.config._policy_write_authorized). Why this shape (and not a
+# parameter, an env var, or a reusable boolean scope): the #104697 review
+# established that any *reusable* importable token is forgeable by the agent
+# process that can import the writer (#104059 class). A one-shot grant is
+# forgeable too — agent-executed Python in-process CAN call the granter — so the
+# writer's FRAME check is the load-bearing half: the granter is only invoked by
+# the sanctioned human-input paths, the grant is single-use (minted and consumed
+# within one write), and no headless agent context (cron / -q / unattended /
+# detector-approved child processes) carries a sanctioned handler frame. The
+# TUI RPC funnel additionally requires its bound transport to be registered as
+# this process's live gateway channel (#104697 round-6). The gateway /approvals
+# path runs the writer with a grant stamped AFTER its enabled-admin-policy check
+# (the human is the authenticated sender of the slash command), and the grant is
+# consumed before any agent code can race it.
 _operator_policy_write_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "operator_policy_write", default=False)
 
@@ -413,20 +415,3 @@ def is_operator_policy_write() -> bool:
     """True inside an operator-qualified write scope (see module comment)."""
     return _operator_policy_write_ctx.get()
 
-
-def _is_human_actor_context() -> bool:
-    """True when THIS process is driven by a human as the actor: an interactive
-    operator CLI with a TTY on stdin. Deliberately does NOT trust gateway
-    platform env: a gateway backend process is where agent turns execute, so
-    "platform env set" carries no human proof (round-2 review finding). The
-    gateway /approvals path authorizes via the one-shot grant stamped after its
-    admin check, not via this context test."""
-    if _is_interactive_cli():
-        # A real operator CLI has a TTY on stdin; a scripted/headless child does not.
-        try:
-            import sys
-            if sys.stdin is not None and sys.stdin.isatty():
-                return True
-        except Exception:
-            pass
-    return False

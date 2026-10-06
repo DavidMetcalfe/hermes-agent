@@ -937,9 +937,9 @@ class GatewaySlashCommandsMixin(
         # system prompt/tool schema (prompt-cache prefix is sacred).
         # The admin's slash command IS the human decision: stamp the one-shot operator
         # grant (stamped AFTER the enabled-admin check) so the writer accepts this write.
-        # The grant is process-local and consumed by the writer's context check; agent
-        # code cannot enter it meaningfully because the writer also requires a human-actor
-        # context, which a gateway backend process is not (#104697 round-2 review).
+        # The grant is process-local and single-use; the writer independently requires
+        # this handler's frame on the live stack, so agent code executing in a separate
+        # process can neither stamp the grant nor produce the frame chain (#104697).
         from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
         token = grant_operator_policy_write()
         try:

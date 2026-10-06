@@ -3734,10 +3734,11 @@ def set_config_value(key: str, value: str, force: bool = False):
     to ``model.default``.
 
     Security-policy keys (``approvals.*``, ``security.*``, ``command_allowlist*``) are refused
-    unless the call is operator-qualified: inside the operator write scope (entered only by the
-    sanctioned human-actor paths — the gateway ``/approvals`` command behind its admin check and
-    the interactive operator CLI) AND a human is present in the current approval context. Both
-    conditions are checked here, not passed in: an importable authorization token would be
+    unless the call is operator-qualified: inside the one-shot operator write scope (stamped only
+    by the sanctioned human-input paths — the gateway ``/approvals`` command behind its
+    enabled-admin check, the interactive ``/approvals`` handler, or the TUI RPC funnel behind its
+    live-transport provenance check) AND with a sanctioned handler frame on the call stack. Both
+    are checked here, not passed in: an importable authorization token would be
     forgeable by the same process that can import this writer (#104059 class, #104697 review)."""
     if is_managed():
         managed_error("set configuration values")
@@ -3752,12 +3753,12 @@ def set_config_value(key: str, value: str, force: bool = False):
     _exit_if_key_managed(key, "set")
     # Security-policy guard (#81101): approvals.*, security.* and
     # command_allowlist change the effective security policy mid-session. The
-    # authorization is (operator scope AND human present), both evaluated HERE so
-    # no importable parameter can mint it. In any non-interactive context (cron,
-    # -q, unattended platforms, headless child processes) the write is refused
-    # outright — a shell-detector approval in a parent process cannot be carried
-    # into this one, and that is the point: the sanctioned operator paths run the
-    # writer in the process where the human is present.
+    # authorization is (one-shot operator scope AND a sanctioned handler frame
+    # on the stack), both evaluated HERE so no importable parameter can mint
+    # it. Headless contexts (cron, -q, unattended platforms, child processes)
+    # are refused because no sanctioned path stamps the grant there and no
+    # handler frame is present — a shell-detector approval in a parent process
+    # cannot be carried into this one.
     if _is_sensitive_config_key(key) and not _policy_write_authorized():
         _refuse_sensitive_config_key(key, hint="set")
     if _is_env_config_key(key):
