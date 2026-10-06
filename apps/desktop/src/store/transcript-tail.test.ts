@@ -193,3 +193,56 @@ describe('order-echo guard (#92508)', () => {
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
 })
+
+// #133569: every `getLatestSessionMessages` re-records the tail, and a fresh
+// hydration read always starts at the NEWEST row. Adopting it wholesale drags
+// a tail "Show earlier" already paged back past down to the offset-0 page: each
+// further click then re-fetches rows the store already holds, the merge is an
+// identity, and the button never retires. Paging state may only advance here.
+describe('recordTranscriptTail does not regress paging progress (#133569)', () => {
+  beforeEach(() => {
+    $transcriptTailBySessionId.set({})
+  })
+
+  /** A full page whose rows were counted back from a later offset. */
+  const advancedPage = (offset: number, count = 10) =>
+    ({
+      messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
+      pagination: { limit: 10, offset, order: 'latest' as const }
+    }) as never
+
+  it('keeps a further-along offset when a fresh hydration page re-records', () => {
+    recordTranscriptTail('s1', advancedPage(30))
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 40, possiblyTruncated: true })
+
+    // Background hydration of the same session: newest page, offset 0, full.
+    recordTranscriptTail('s1', page(10))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 40, possiblyTruncated: true })
+  })
+
+  it('still retires the offer when a fresh page proves the tail complete', () => {
+    recordTranscriptTail('s1', advancedPage(30))
+    expect(transcriptTailState('s1')).toMatchObject({ possiblyTruncated: true })
+
+    // Short newest page: the backend has fewer rows than one page, so nothing
+    // older exists and "Show earlier" must stand down.
+    recordTranscriptTail('s1', page(6))
+
+    expect(transcriptTailState('s1')?.possiblyTruncated).toBe(false)
+  })
+
+  it('does not re-arm a tail that already reported everything loaded', () => {
+    // The session paged all the way back: nextOffset is past the last page and
+    // possiblyTruncated is false, so the button has retired.
+    recordTranscriptTail('s1', advancedPage(278, 8))
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 286, possiblyTruncated: false })
+
+    // A later hydration read of the same session always comes back full
+    // (limit 10). It must not resurrect the offer — only `rewindTranscriptTail`
+    // (transcript retention) is allowed to re-arm it.
+    recordTranscriptTail('s1', page(10))
+
+    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 286, possiblyTruncated: false })
+  })
+})
