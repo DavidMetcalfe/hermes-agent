@@ -1620,3 +1620,37 @@ def test_bot_sender_observation_unchanged_by_sibling_flag():
 
     sibling_from_bot = _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)
     assert adapter._should_observe_unmentioned_group_message(sibling_from_bot) is False
+
+
+def test_mirror_fires_on_overflow_split_finalize(tmp_path):
+    """A finalize edit whose formatted content exceeds the message cap is delivered by
+    ``_edit_overflow_split``; the final answer must still reach the sibling DB."""
+    db_path, db = _sibling_state_db(tmp_path)
+    try:
+        adapter = _make_adapter(
+            allowed_chats=["-100123"], group_allowed_chats=["-100123"], mirror_profiles=["sknerus"])
+        adapter._bot = SimpleNamespace(
+            id=999, username="hermes_bot",
+            edit_message_text=AsyncMock(return_value=SimpleNamespace()),
+            send_message=AsyncMock(return_value=SimpleNamespace(message_id=202)),
+        )
+        adapter._rich_messages_enabled = False
+        adapter._last_overflow_preview = {}
+        adapter._telegram_profiles_root = lambda: tmp_path
+        object.__setattr__(adapter, "MAX_MESSAGE_LENGTH", 160)
+
+        content = "word " * 60
+        result = asyncio.run(
+            adapter.edit_message("-100123", "201", content, finalize=True, metadata=None))
+        assert result.success is True
+        assert result.continuation_message_ids            # actually split, not a plain edit
+        session_id = db.find_session_by_origin(
+            platform="telegram", chat_id="-100123", thread_id=None, user_id=None)
+        assert session_id is not None
+        msgs = db.get_messages(session_id)
+        assert len(msgs) == 1
+        assert msgs[0]["content"].rstrip().endswith("word")
+    finally:
+        db.close()
+
+

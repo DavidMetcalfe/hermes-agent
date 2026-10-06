@@ -4053,6 +4053,11 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
             prev_id = new_id
         last_id = continuation_ids[-1] if continuation_ids else message_id
         logger.debug("[%s] Overflow split delivered %d chunks; last_id=%s", self.name, 1 + len(continuation_ids), last_id)
+        if finalize:
+            # A finalize edit whose formatted content exceeds the message cap is delivered here, so
+            # this is the "final response" the egress mirror must carry too — otherwise an over-limit
+            # final answer reaches the group but never the sibling profiles.
+            await asyncio.to_thread(self._mirror_outgoing_response_to_siblings, chat_id, content, metadata)
         return SendResult(success=True, message_id=last_id, continuation_message_ids=tuple(continuation_ids))
 
     async def delete_message(self, chat_id: str, message_id: str) -> bool:
