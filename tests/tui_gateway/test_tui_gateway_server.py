@@ -48,7 +48,16 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
 # ``_tui_policy_write`` provenance guard exercised rather than bypassed.
 from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS as _LIVE_GATEWAYS
 _RPC_TRANSPORT = Mock()
-_LIVE_GATEWAYS.add(_RPC_TRANSPORT)
+
+
+@pytest.fixture(autouse=True)
+def _register_rpc_transport():
+    """Register the stub for the lifetime of each test only, so the module-level
+    import never leaks it into the process-wide provenance set (a later test that
+    asserts an UNREGISTERED transport is refused must not inherit this Mock)."""
+    _LIVE_GATEWAYS.add(_RPC_TRANSPORT)
+    yield
+    _LIVE_GATEWAYS.discard(_RPC_TRANSPORT)
 
 
 @pytest.fixture(autouse=True)
