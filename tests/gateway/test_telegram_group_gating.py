@@ -1574,3 +1574,49 @@ def test_sibling_only_flag_observes_sibling_without_unmentioned(tmp_path):
     assert adapter._should_observe_unmentioned_group_message(ordinary_msg) is False
 
 
+# ---------------------------------------------------------------------------
+# Review round: the sibling branch is refused by DISPATCH before every later
+# branch, so the observe-tail vetoes (wake word / reply / require_mention /
+# free-response) must not drop a sibling-addressed message from both paths.
+# ---------------------------------------------------------------------------
+
+def test_sibling_addressed_observed_despite_tail_vetoes():
+    """A sibling-addressed message is observed even when it matches this bot's wake word, or
+    quote-replies this bot, or the chat is free-response — ``_should_process_message`` refuses
+    all of those BEFORE it reaches its wake-word/reply/free-response branches, so the tail
+    vetoes in the observe gate (which assume "matched ⇒ dispatched") do not apply."""
+    # Wake word (mention_patterns) match AND a quote-reply to this bot.
+    adapter = _make_adapter(**_sibling_base_kwargs(mention_patterns=["hermes"]))
+    msg = _group_message(
+        "@other_bot hermes, take this one", chat_id=-100, from_user_id=111,
+        reply_to_bot=True, entities=_mention_entities("@other_bot hermes, take this one", ["@other_bot"]))
+    assert adapter._should_process_message(msg) is False      # refused by exclusive_bot_mentions
+    assert adapter._should_observe_unmentioned_group_message(msg) is True
+
+    # require_mention off: dispatch is still refused first, so the message must be observed.
+    ungated = _make_adapter(**_sibling_base_kwargs(require_mention=False))
+    plain = _sibling_message("@other_bot hello")
+    assert ungated._should_process_message(plain) is False
+    assert ungated._should_observe_unmentioned_group_message(plain) is True
+
+    # free-response chat: the exclusive gate precedes the free-response bypass in dispatch.
+    free = _make_adapter(**_sibling_base_kwargs(free_response_chats=["-100"]))
+    assert free._should_process_message(plain) is False
+    assert free._should_observe_unmentioned_group_message(plain) is True
+
+
+def test_bot_sender_observation_unchanged_by_sibling_flag():
+    """Main's #115119 guarantee survives the sibling flag: a bot-authored message the dispatch
+    gate drops is still observed. Only bot-authored SIBLING-addressed messages stay excluded
+    (their output arrives via the outbound mirror instead)."""
+    adapter = _make_adapter(
+        require_mention=True, bots_require_mention=True, mention_patterns=["hermes"],
+        allowed_chats=["-100"], group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True, observe_sibling_bot_messages=True,
+    )
+    chatter = _bot_sender_message("hermes, can you take this one?")   # wake word, no @mention of us
+    assert adapter._should_process_message(chatter) is False
+    assert adapter._should_observe_unmentioned_group_message(chatter) is True
+
+    sibling_from_bot = _sibling_message("@other_bot hello", from_user_id=222, sender_is_bot=True)
+    assert adapter._should_observe_unmentioned_group_message(sibling_from_bot) is False

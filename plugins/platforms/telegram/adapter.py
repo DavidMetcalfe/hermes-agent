@@ -6260,7 +6260,9 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         if self._topic_gates_pass(getattr(message, "message_thread_id", None), warn_non_numeric=False) is False:
             return False
         chat_id_str = self._chat_id_str(message)
-        if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
+        sibling_addressed = (
+            self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message))
+        if sibling_addressed:
             # Sibling-addressed messages are normally dropped. When opted in, observe them
             # provided the sender is not a bot (bot-authored sibling replies are mirrored
             # outbound and must not be double-captured here).
@@ -6277,6 +6279,15 @@ class TelegramAdapter(TelegramHeldInboundMixin, BasePlatformAdapter):
         allowed = self._telegram_observe_allowed_chats()
         if not allowed or chat_id_str not in allowed:
             return False
+        if sibling_addressed:
+            # ``exclusive_bot_mentions`` refuses a sibling-addressed message before every later
+            # dispatch branch in ``_should_process_message`` (free-response, require_mention,
+            # reply-to-bot, wake words), so it is never dispatched: observing it here cannot
+            # double-record it, and the tail vetoes below — which assume "matched ⇒ dispatched" —
+            # do not apply to it. Without this short-circuit a wake-word match, a quote-reply to
+            # this bot, or a free-response chat would drop the message from BOTH paths, which is
+            # the loss this feature exists to close.
+            return True
         # Free-response chats/topics dispatch every message, so they are never observed.
         if chat_id_str in self._telegram_free_response_chats() or self._telegram_is_free_response_topic(message):
             return False
