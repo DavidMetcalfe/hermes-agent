@@ -40,11 +40,15 @@ def _dispatch_sync(req: dict, transport=None) -> dict | None:
 
 # A stub transport for ``config.set`` security-policy writes. ``config.set`` for
 # policy keys (``approvals.mode`` / ``yolo``) routes through ``_tui_policy_write``,
-# which requires the live gateway RPC transport — ``current_transport()`` is bound
-# by ``dispatch`` in production. These tests call ``handle_request`` directly to
-# isolate the handler, so bind this stub to model the transport-bound gateway
-# context and keep the ``_tui_policy_write`` guard exercised rather than bypassed.
+# which requires the bound transport to be REGISTERED as this process's live
+# gateway channel — ``_POLICY_WRITE_TRANSPORTS`` is populated only by
+# ``entry.main()`` / ``ws.handle_ws()`` in production. These tests call
+# ``handle_request`` directly to isolate the handler, so register this stub the
+# way ``entry.main()`` registers the stdio transport and keep the
+# ``_tui_policy_write`` provenance guard exercised rather than bypassed.
+from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS as _LIVE_GATEWAYS
 _RPC_TRANSPORT = Mock()
+_LIVE_GATEWAYS.add(_RPC_TRANSPORT)
 
 
 @pytest.fixture(autouse=True)
