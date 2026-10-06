@@ -1177,17 +1177,18 @@ class TestSensitiveConfigKeyGuard:
         assert "security" not in raw
         assert "command_allowlist" not in raw
 
-    @pytest.mark.parametrize("key, expected", [
-        ("approvals.mode", "off"),          # string-typed default → stays string
-        ("approvals.cron_mode", "off"),     # string-typed default → stays string
-        ("security.redact_secrets", False),  # bool default → "off" coerces to False
-        ("command_allowlist", "git push --force"),  # list default → literal string
+    @pytest.mark.parametrize("key, value, expected", [
+        ("approvals.mode", "off", "off"),           # string-typed default → stays string
+        ("approvals.cron_mode", "off", "off"),      # string-typed default → stays string
+        ("security.redact_secrets", "off", False),  # bool default → "off" coerces to False
+        # List-typed key: main refuses a bare string (#114471) — write a list literal.
+        ("command_allowlist", '["git push --force"]', ["git push --force"]),
     ])
-    def test_sensitive_key_allowed_for_operator_scope(self, _isolated_hermes_home, operator_write_scope, key, expected):
+    def test_sensitive_key_allowed_for_operator_scope(self, _isolated_hermes_home, operator_write_scope, key, value, expected):
         """The sanctioned operator path (operator scope + human present) may write."""
-        set_config_value(key, "off" if key != "command_allowlist" else "git push --force")
+        set_config_value(key, value)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         node = saved
         for part in key.split("."):
@@ -1259,7 +1260,7 @@ class TestSensitiveConfigKeyGuard:
         args = SimpleNamespace(config_command="set", key="model", value="gpt-5.6-sol", force=True)
         config_command(args)
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["model"] == "gpt-5.6-sol"
 
@@ -1275,7 +1276,7 @@ class TestSensitiveConfigKeyGuard:
         set_config_value("terminal.backend", "docker")
         set_config_value("display.skin", "mono")
 
-        import yaml
+        import hermes_yaml as yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
         assert saved["terminal"]["backend"] == "docker"
         assert saved["display"]["skin"] == "mono"
