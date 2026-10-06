@@ -249,10 +249,10 @@ function withoutPagingRegression(
   }
 
   // Keep the further-along paging state; adopt the incoming route, since that
-  // is the one the next older-page fetch will be sent with.
+  // is the one the next older-page fetch will be sent with. Spread, so fields
+  // added to `TranscriptTailState` are kept rather than silently dropped.
   return {
-    nextOffset: existing.nextOffset,
-    possiblyTruncated: existing.possiblyTruncated,
+    ...existing,
     profile: incoming.profile
   }
 }

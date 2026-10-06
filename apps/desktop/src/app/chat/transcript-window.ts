@@ -158,10 +158,10 @@ export function advanceTranscriptWindow(
       if (weight <= budget + TRANSCRIPT_WINDOW_SLACK) {
         // #133569: the cut sits at the store head, so the window IS the whole
         // store and the store holds nothing older — `windowed` must say false
-        // (transcript-window.ts:41-42). Reporting the stale anchor as windowed
-        // keeps "Show earlier" armed while gating OFF the REST backfill
-        // (`expandWindow` runs that branch only when !windowed), and hands
-        // retention an anchor that no longer marks a cut.
+        // (see the `TranscriptWindow` interface doc, lines 41-42). Reporting
+        // the stale anchor as windowed keeps "Show earlier" armed while gating
+        // OFF the REST backfill (`expandWindow` runs that branch only when
+        // !windowed), and hands retention an anchor that no longer marks a cut.
         if (start === 0) {
           return {
             anchorId: null,

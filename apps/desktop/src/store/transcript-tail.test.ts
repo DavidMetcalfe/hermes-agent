@@ -211,14 +211,20 @@ describe('recordTranscriptTail does not regress paging progress (#133569)', () =
       pagination: { limit: 10, offset, order: 'latest' as const }
     }) as never
 
-  it('keeps a further-along offset when a fresh hydration page re-records', () => {
-    recordTranscriptTail('s1', advancedPage(30))
+  it('keeps a further-along offset, and adopts the incoming route, when hydration re-records', () => {
+    const owner = { connectionId: 'c1', profile: 'work' }
+
+    recordTranscriptTail('s1', advancedPage(30), owner, owner)
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 40, possiblyTruncated: true })
 
-    // Background hydration of the same session: newest page, offset 0, full.
-    recordTranscriptTail('s1', page(10))
+    // Background hydration of the same session, now reached over a re-bound
+    // route: newest page, offset 0, full. Paging state must not move, but the
+    // route the next older-page fetch is sent with must follow the connection
+    // that actually answered.
+    recordTranscriptTail('s1', page(10), { connectionId: 'c2', profile: 'work' }, owner)
 
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 40, possiblyTruncated: true })
+    expect(transcriptTailState('s1')?.profile).toEqual({ connectionId: 'c2', profile: 'work' })
   })
 
   it('still retires the offer when a fresh page proves the tail complete', () => {
