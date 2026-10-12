@@ -1248,6 +1248,9 @@ class TestConfigSetSecurityPolicy:
             "hermes config set approvals.cron_mode deny",
             "hermes config set security.redact_secrets false",
             "hermes -p ade config set command_allowlist git",
+            "hermes config unset approvals.mode",
+            "hermes config unset command_allowlist",
+            "python -m hermes_cli.main config unset security.redact_secrets",
         ):
             dangerous, _, desc = detect_dangerous_command(cmd)
             assert dangerous is True, cmd
@@ -1292,6 +1295,7 @@ class TestConfigSetSecurityPolicy:
             "hermes config set terminal.backend docker",
             "hermes config set model gpt-4o",
             "hermes config set display.skin mono",
+            "hermes config unset terminal.backend",
         ):
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
@@ -1307,7 +1311,10 @@ class TestConfigSetSecurityPolicy:
             'hermes config set "hooks_auto_accept" true',
             'hermes config set hooks.pre_tool_call [{"command": "/bin/true"}]',
             "hermes config set hooks off",
+            "hermes config unset hooks_auto_accept",
+            "hermes config unset hooks.pre_tool_call",
             "python -m hermes_cli.main config set hooks_auto_accept true",
+            "python -m hermes_cli.main config unset hooks_auto_accept",
             "python3.12 -m hermes_cli.main config set --force hooks.pre_tool_call x",
         ):
             dangerous, _, desc = detect_dangerous_command(cmd)
@@ -1323,6 +1330,8 @@ class TestConfigSetSecurityPolicy:
             "hermes approvals suggest --apply 1,3",
             "hermes approvals suggest --json --apply 1",
             "hermes -p ade approvals suggest --apply 2",
+            "python -m hermes_cli.main approvals suggest --apply 1",
+            "python3 -m hermes_cli.main approvals suggest --apply 2,4",
         ):
             dangerous, _, desc = detect_dangerous_command(cmd)
             assert dangerous is True, cmd
