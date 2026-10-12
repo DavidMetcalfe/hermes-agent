@@ -884,12 +884,24 @@ def _is_env_config_key(key: str) -> bool:
 
 # Security-sensitive config keys that `hermes config set`/`unset` refuses to
 # mutate without an explicit operator override. ``config.yaml`` IS the security
-# policy (approvals.mode, command_allowlist, security.*), the config cache is
-# mtime-keyed, and a write takes effect mid-session — so the sanctioned CLI
-# path must not let an agent silently weaken the approval gate or redaction
-# the way it could by writing to the file directly. Mirrors the file-tool deny
-# in tools/file_tools.py (_check_sensitive_path). See #81101.
-_SENSITIVE_CONFIG_KEYS = ("approvals.", "security.", "command_allowlist")
+# policy (approvals.mode, command_allowlist, security.*, executable hooks), the
+# config cache is mtime-keyed, and a write takes effect mid-session — so the
+# sanctioned CLI path must not let an agent silently weaken the approval gate,
+# redaction, or the hook runner's consent the way it could by writing to the
+# file directly. Mirrors the file-tool deny in tools/file_tools.py
+# (_check_sensitive_path). The class follows the config consumers that grant,
+# suppress, or execute authority: ``hooks.*`` registers shell commands the hook
+# runner executes via subprocess.Popen (agent/shell_hooks.py) and
+# ``hooks_auto_accept`` is the consent flag its ``_resolve_effective_accept``
+# treats as auto-approval, so both belong here (#104697 review round 7, F2).
+# See #81101.
+_SENSITIVE_CONFIG_KEYS = (
+    "approvals.",
+    "security.",
+    "command_allowlist",
+    "hooks.",
+    "hooks_auto_accept",
+)
 
 
 def _is_sensitive_config_key(key: str) -> bool:
@@ -950,8 +962,8 @@ def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
     """Print a refusal for a security-sensitive key write and exit non-zero."""
     print(
         f"✗ Cannot {hint} '{key}': this key controls security policy "
-        f"(approvals / security / command_allowlist) and cannot be changed "
-        f"without explicit operator confirmation.",
+        f"(approvals / security / command_allowlist / executable hooks) and "
+        f"cannot be changed without explicit operator confirmation.",
         file=sys.stderr,
     )
     if key == "approvals.mode":
@@ -967,8 +979,8 @@ def _refuse_sensitive_config_key(key: str, *, hint: str) -> None:
             file=sys.stderr,
         )
         print(
-            "  Edit config.yaml directly, or use the dedicated command where "
-            "one exists (e.g. `hermes approvals` for approvals.mode).",
+            "  Edit config.yaml directly (operator), or use the dedicated "
+            "slash command where one exists (`/approvals` for approvals.mode).",
             file=sys.stderr,
         )
     sys.exit(1)

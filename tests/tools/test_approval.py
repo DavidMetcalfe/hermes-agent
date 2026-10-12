@@ -1296,6 +1296,60 @@ class TestConfigSetSecurityPolicy:
             dangerous, _, _ = detect_dangerous_command(cmd)
             assert dangerous is False, cmd
 
+    def test_executable_policy_keys_detected(self):
+        """hooks.* / hooks_auto_accept are executable policy — the hook runner
+        executes configured commands via subprocess.Popen and treats
+        hooks_auto_accept as consent, so every CLI spelling must hit the same
+        security-policy gate as approvals.* (#104697 review round 7, F2)."""
+        for cmd in (
+            "hermes config set hooks_auto_accept true",
+            "hermes config set --force hooks_auto_accept true",
+            'hermes config set "hooks_auto_accept" true',
+            'hermes config set hooks.pre_tool_call [{"command": "/bin/true"}]',
+            "hermes config set hooks off",
+            "python -m hermes_cli.main config set hooks_auto_accept true",
+            "python3.12 -m hermes_cli.main config set --force hooks.pre_tool_call x",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "security-policy" in desc, cmd
+
+    def test_approvals_suggest_apply_detected(self):
+        """`hermes approvals suggest --apply` persists command_allowlist via
+        tools/approval.save_permanent_allowlist() — outside the
+        set_config_value guard — so the terminal gate is the only surface
+        (#104697 review round 7, F2 inventory)."""
+        for cmd in (
+            "hermes approvals suggest --apply 1,3",
+            "hermes approvals suggest --json --apply 1",
+            "hermes -p ade approvals suggest --apply 2",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "command_allowlist" in desc, cmd
+
+    def test_approvals_suggest_dry_run_not_flagged(self):
+        for cmd in (
+            "hermes approvals suggest",
+            "hermes approvals suggest --days 30",
+            "hermes approvals test --json",
+        ):
+            dangerous, _, _ = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+    def test_mode_change_spelling_detected(self):
+        """Prophylactic gate for the shell spelling of the /approvals slash
+        command (no such argv subcommand exists today — `hermes approvals` has
+        only suggest/test)."""
+        for cmd in (
+            "hermes approvals off",
+            "hermes approvals smart",
+            "hermes approvals manual",
+        ):
+            dangerous, _, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, cmd
+            assert "mode change" in desc, cmd
+
 
 class TestGitDestructiveOps:
     """git reset --hard, push --force, clean -f, branch -D can destroy
