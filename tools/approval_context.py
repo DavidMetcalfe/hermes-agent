@@ -398,15 +398,21 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
 # established that any *reusable* importable token is forgeable by the agent
 # process that can import the writer (#104059 class). A one-shot grant is
 # forgeable too — agent-executed Python in-process CAN call the granter — so the
-# writer's FRAME check is the load-bearing half: the granter is only invoked by
-# the sanctioned human-input paths, the grant is single-use (minted and consumed
-# within one write), and no headless agent context (cron / -q / unattended /
-# detector-approved child processes) carries a sanctioned handler frame. The
-# TUI RPC funnel additionally requires its bound transport to be registered as
-# this process's live gateway channel (#104697 round-6). The gateway /approvals
-# path runs the writer with a grant stamped AFTER its enabled-admin-policy check
-# (the human is the authenticated sender of the slash command), and the grant is
-# consumed before any agent code can race it.
+# writer's FRAME check raises the bar against casual import-and-call: the
+# granter is only invoked by the sanctioned human-input paths and the grant is
+# single-use (minted and consumed within one write). This is call discipline,
+# NOT an authority boundary: a caller that routes through the real dispatcher
+# (HermesCLI.process_command("/approvals …")) reaches the granter with genuine
+# frames and no forgery at all, and code-object metadata (function name,
+# co_filename) is caller-controlled, so a forged frame satisfies the checks
+# too (#104697 review round 7 — both routes reproduced against an isolated
+# store). Both are disclosed residuals; the enforceable boundary for
+# worker-executable code is out-of-process. The TUI RPC funnel additionally
+# requires its bound transport to be registered as this process's live gateway
+# channel (#104697 round-6), which a fresh child cannot fake. The gateway
+# /approvals path runs the writer with a grant stamped AFTER its
+# enabled-admin-policy check (the human is the authenticated sender of the
+# slash command), and the grant is consumed before any agent code can race it.
 _operator_policy_write_ctx: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "operator_policy_write", default=False)
 
@@ -419,9 +425,14 @@ def _is_sanctioned_policy_stamp_caller() -> bool:
     - Gateway: _handle_approvals_command in gateway/slash_commands.py (behind admin check)
     - TUI RPC: _tui_policy_write in tui_gateway/methods_config_set.py (human renderer RPC)
 
-    Frame inspection forecloses casual import-and-call; a determined in-process
-    attacker faking frames remains out of the unattended threat model (existing
-    disclosed residual).
+    Frame inspection forecloses casual import-and-call: a bare
+    grant_operator_policy_write() from agent-executed Python is refused.
+    It is NOT an authority boundary — a caller routing through the real
+    dispatcher (process_command) arrives with genuine frames and needs no
+    forgery, and function name / co_filename are caller-controlled source
+    text, so a compiled frame satisfies this too. Both are disclosed
+    residuals (#104697 review round 7); the enforceable boundary for
+    worker-executable code is out-of-process.
     """
     import inspect
     stack = inspect.stack()

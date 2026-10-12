@@ -291,8 +291,10 @@ def _tui_policy_write(key: str, value: str) -> None:
     subprocess starts with an EMPTY live set, so binding an arbitrary object there
     is refused. Deliberate in-process mutation of the set itself remains possible
     and is the disclosed residual — the same capability as writing config.yaml
-    directly, which the file-tools deny and execute_code integrity (#113459) guard
-    at the file layer instead. Pinned inverse:
+    directly with raw file I/O. The file-tools deny covers only the agent's own
+    file tools; the raw-I/O route is open (#49578) and the execute_code
+    config-integrity guard (#113459) is not in this tree, so neither is cited
+    here as an enforceable boundary. Pinned inverse:
     tests/tui_gateway/test_approvals_policy_chokepoint.py.
     """
     from tui_gateway.transport import _POLICY_WRITE_TRANSPORTS, current_transport
