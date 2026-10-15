@@ -269,6 +269,7 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { resolveOfflineDir } from './offline-dir-resolver'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
@@ -800,31 +801,10 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
-function resolveOfflineDir() {
-  // 1. Environment variable takes precedence.
-  const fromEnv = process.env.HERMES_OFFLINE_DIR ? String(process.env.HERMES_OFFLINE_DIR).trim() : ''
-  if (fromEnv) {
-    return fromEnv
-  }
-
-  // 2. Config file: read `hermes.offlineDir` from HERMES_HOME/config.yaml.
-  try {
-    const configPath = path.join(HERMES_HOME, 'config.yaml')
-    const text = fs.readFileSync(configPath, 'utf8')
-    // Simple regex extraction for `hermes:` block with `offlineDir:`.
-    const match = text.match(/hermes:[^]*?offlineDir:\s*['"]?([^'"\n]+)['"]?/)
-    if (match?.[1]) {
-      const value = match[1].trim()
-      if (value) return value
-    }
-  } catch {
-    // Config file missing or unreadable — fall through.
-  }
-
-  return ''
-}
-
-const OFFLINE_DIR = resolveOfflineDir()
+// Offline install media directory: HERMES_OFFLINE_DIR wins, otherwise
+// `hermes.offlineDir` from config.yaml. Parsing lives in offline-dir-resolver.ts
+// so the block-boundary behaviour is unit-testable.
+const OFFLINE_DIR = resolveOfflineDir({ hermesHome: HERMES_HOME })
 
 function pathWithHermesManagedNode(...entries) {
   const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)

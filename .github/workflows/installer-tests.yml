@@ -44,3 +44,16 @@ jobs:
       - name: System Node and npm compatibility (Windows PowerShell 5.1)
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1
+
+      # install.ps1 dot-sources scripts/install-offline.ps1, so a construct that
+      # only parses under PowerShell 7 breaks the whole installer at load time
+      # rather than at the call site. These tests parse both files, dot-source
+      # the module, and exercise the bundle producer/consumer against a local
+      # fixture repository (no network).
+      - name: Offline install module (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-offline-module.ps1
+
+      - name: Offline install module (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-offline-module.ps1

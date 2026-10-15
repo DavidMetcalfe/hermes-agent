@@ -187,6 +187,92 @@ function resolveLocalInstallScript(sourceRepoRoot) {
   }
 }
 
+// Sibling installer files the main installer needs at runtime, resolved from
+// the SAME directory as the installer itself ($PSScriptRoot). install.ps1
+// dot-sources install-offline.ps1 from two sites, so a delivery path that
+// stages only the main script produces an installer that dies at the
+// repository stage with a missing module. install.sh sources no siblings.
+function installSiblingNames() {
+  return installScriptKind() === 'powershell' ? ['install-offline.ps1'] : []
+}
+
+// Directories on the offline media that may hold the installer. The media
+// layout mirrors scripts/ (install.ps1 + install-offline.ps1 side by side), so
+// accept both a flat media root and a media scripts/ subdirectory.
+function offlineInstallerCandidates(offlineDir) {
+  if (!offlineDir) {
+    return []
+  }
+
+  return [offlineDir, path.join(offlineDir, 'scripts')]
+}
+
+// Every required sibling must sit next to the main script wherever that script
+// actually lives, or the dot-source fails at runtime.
+function hasInstallerSiblings(scriptPath) {
+  const directory = path.dirname(scriptPath)
+
+  return installSiblingNames().every(name => {
+    try {
+      fs.accessSync(path.join(directory, name), fs.constants.R_OK)
+
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+// Stage the installer and its siblings from `sourceDir` into the bootstrap
+// cache, and return the cached main-script path. Falls back to calling with the
+// source path directly when the cache is not writable (read-only FS), which is
+// still correct because the siblings are colocated in the source.
+function stageInstallerWithSiblings(sourceDir, cachedPath, label, emit) {
+  const source = path.join(sourceDir, installScriptName())
+
+  try {
+    fs.accessSync(source, fs.constants.R_OK)
+  } catch {
+    return null
+  }
+
+  for (const name of installSiblingNames()) {
+    try {
+      fs.accessSync(path.join(sourceDir, name), fs.constants.R_OK)
+    } catch {
+      emit({
+        type: 'log',
+        line: `[bootstrap] ${label} is missing required sibling ${name} in ${sourceDir}; ignoring it`
+      })
+
+      return null
+    }
+  }
+
+  try {
+    fs.mkdirSync(path.dirname(cachedPath), { recursive: true })
+    fs.copyFileSync(source, cachedPath)
+
+    for (const name of installSiblingNames()) {
+      fs.copyFileSync(path.join(sourceDir, name), path.join(path.dirname(cachedPath), name))
+    }
+
+    return cachedPath
+  } catch {
+    // Cache copy failed (read-only FS, etc.) -- use the source path directly.
+    // The siblings are already next to it.
+    return source
+  }
+}
+
+async function downloadInstallSiblings(ref, destPath, _downloadSibling) {
+  const destDir = path.dirname(destPath)
+
+  for (const name of installSiblingNames()) {
+    await _downloadSibling(ref, path.join(destDir, name), name)
+  }
+}
+
 function bootstrapCacheDir(hermesHome) {
   return path.join(hermesHome, 'bootstrap-cache')
 }
@@ -227,12 +313,11 @@ function cachedScriptPath(hermesHome, commit) {
   return path.join(bootstrapCacheDir(hermesHome), `install-${commit}.${process.platform === 'win32' ? 'ps1' : 'sh'}`)
 }
 
-function downloadInstallScript(ref, destPath) {
+function downloadInstallScript(ref, destPath, scriptName = installScriptName()) {
   // Fetch from GitHub raw at the install ref. Normal production builds pass a
   // pinned SHA (immutable). Non-git fallback builds pass an unpinned branch
   // ref so local builds can still bootstrap without pretending the all-zero
   // placeholder is a real GitHub commit.
-  const scriptName = installScriptName()
   const url = `https://raw.githubusercontent.com/NousResearch/hermes-agent/${ref}/scripts/${scriptName}`
 
   return new Promise((resolve, reject) => {
@@ -319,7 +404,9 @@ async function resolveInstallScript({
   sourceRepoRoot,
   hermesHome,
   emit,
-  _download = downloadInstallScript
+  offlineDir = '',
+  _download = downloadInstallScript,
+  _downloadSibling = downloadInstallScript
 }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.ts (path.resolve
@@ -347,16 +434,37 @@ async function resolveInstallScript({
   const cached = cachedScriptPath(hermesHome, installRef.cacheKey)
   const resolvedCommit = installRef.pinned ? installRef.ref : null
 
-  try {
-    await fsp.access(cached, fs.constants.R_OK)
-    emit({
-      type: 'log',
-      line: `[bootstrap] using cached ${installScriptName()} for ${installRef.ref.slice(0, 12)}`
-    })
+  // 3. Offline media. This MUST precede the download attempt: air-gapped
+  //    installs have no network at all, and the installed-agent fallback below
+  //    cannot help a FIRST installation (there is no installed checkout yet).
+  //    The installer and its sibling module are staged together, because the
+  //    repository stage dot-sources the sibling via $PSScriptRoot.
+  const offlineCandidates = offlineInstallerCandidates(offlineDir)
 
-    return { path: cached, source: 'cache', commit: resolvedCommit, kind: installScriptKind() }
-  } catch {
-    // not cached; download
+  for (const candidateDir of offlineCandidates) {
+    const staged = stageInstallerWithSiblings(candidateDir, cached, 'offline media', emit)
+
+    if (staged) {
+      emit({ type: 'log', line: `[bootstrap] using offline ${installScriptName()} from ${candidateDir}` })
+
+      return { path: staged, source: 'offline', commit: resolvedCommit, kind: installScriptKind() }
+    }
+  }
+
+  // A cache entry that predates the sibling scripts is not usable: prefer
+  // re-staging from media (done above) or re-downloading the complete set.
+  if (hasInstallerSiblings(cached)) {
+    try {
+      await fsp.access(cached, fs.constants.R_OK)
+      emit({
+        type: 'log',
+        line: `[bootstrap] using cached ${installScriptName()} for ${installRef.ref.slice(0, 12)}`
+      })
+
+      return { path: cached, source: 'cache', commit: resolvedCommit, kind: installScriptKind() }
+    } catch {
+      // not cached; download
+    }
   }
 
   emit({
@@ -368,6 +476,7 @@ async function resolveInstallScript({
 
   try {
     await _download(installRef.ref, cached)
+    await downloadInstallSiblings(installRef.ref, cached, _downloadSibling)
     emit({ type: 'log', line: `[bootstrap] saved to ${cached}` })
 
     return { path: cached, source: 'download', commit: resolvedCommit, kind: installScriptKind() }
@@ -387,14 +496,10 @@ async function resolveInstallScript({
           `falling back to installed agent ${installScriptName()} at ${installed}`
       })
 
-      try {
-        fs.mkdirSync(path.dirname(cached), { recursive: true })
-        fs.copyFileSync(installed, cached)
+      const staged = stageInstallerWithSiblings(path.dirname(installed), cached, 'installed agent', emit)
 
-        return { path: cached, source: 'installed-agent', commit: resolvedCommit, kind: installScriptKind() }
-      } catch {
-        // Cache copy failed (read-only FS, etc.) -- use the source path directly.
-        return { path: installed, source: 'installed-agent', commit: resolvedCommit, kind: installScriptKind() }
+      if (staged) {
+        return { path: staged, source: 'installed-agent', commit: resolvedCommit, kind: installScriptKind() }
       }
     }
 
@@ -933,7 +1038,7 @@ async function runBootstrap(opts) {
     }
 
     // 1. Resolve the platform installer.
-    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit })
+    const scriptInfo = await resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit, offlineDir })
     const installerKind = scriptInfo.kind || 'powershell'
 
     // 2. Fetch manifest
@@ -1032,9 +1137,12 @@ export {
   buildPosixPinArgs,
   cachedScriptPath,
   hasExistingGitCheckout,
+  hasInstallerSiblings,
   installedAgentInstallScript,
   installRefForStamp,
+  installSiblingNames,
   isPinnedCommit,
+  offlineInstallerCandidates,
   // Exposed for testability
   parseStageResult,
   resolveCheckoutHead,

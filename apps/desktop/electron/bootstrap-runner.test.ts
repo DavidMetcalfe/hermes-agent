@@ -10,9 +10,12 @@ import {
   buildPosixPinArgs,
   cachedScriptPath,
   hasExistingGitCheckout,
+  hasInstallerSiblings,
   installedAgentInstallScript,
   installRefForStamp,
+  installSiblingNames,
   isPinnedCommit,
+  offlineInstallerCandidates,
   resolveInstallScript,
   resolveMarkerPinnedCommit,
   runBootstrap
@@ -268,6 +271,224 @@ test('resolveInstallScript rethrows when the 404 fallback is unavailable', async
       }),
       /HTTP 404|Failed to download/
     )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------------------
+// Offline installer delivery
+//
+// An air-gapped first install has no network and no previously installed agent
+// checkout, so neither the downloader nor the installed-agent fallback can
+// supply the installer. The offline media must be consulted BEFORE the network,
+// and it must deliver the installer's sibling module too -- install.ps1
+// dot-sources install-offline.ps1 via $PSScriptRoot, so staging only the main
+// script yields an installer that dies at the repository stage.
+// ---------------------------------------------------------------------------
+
+test('offlineInstallerCandidates covers media root and media scripts/ layout', () => {
+  assert.deepEqual(offlineInstallerCandidates('/media/bundle'), [
+    '/media/bundle',
+    path.join('/media/bundle', 'scripts')
+  ])
+  assert.deepEqual(offlineInstallerCandidates(''), [], 'no offline dir -> no candidates')
+  assert.deepEqual(offlineInstallerCandidates(null), [], 'null offline dir -> no candidates')
+})
+
+test('installSiblingNames requires the offline module on PowerShell only', () => {
+  const siblings = installSiblingNames()
+
+  if (process.platform === 'win32') {
+    assert.deepEqual(siblings, ['install-offline.ps1'])
+  } else {
+    assert.deepEqual(siblings, [], 'install.sh sources no siblings')
+  }
+})
+
+test('hasInstallerSiblings requires every sibling next to the installer', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-siblings-'))
+
+  try {
+    const main = path.join(dir, SCRIPT_NAME)
+    fs.writeFileSync(main, '#!/bin/sh\necho installer\n')
+
+    const siblings = installSiblingNames()
+
+    if (siblings.length === 0) {
+      // install.sh needs no siblings; the check is satisfied by the main file.
+      assert.equal(hasInstallerSiblings(main), true)
+    } else {
+      assert.equal(hasInstallerSiblings(main), false, 'missing sibling must fail')
+      for (const name of siblings) {
+        fs.writeFileSync(path.join(dir, name), '#!/bin/sh\necho module\n')
+      }
+      assert.equal(hasInstallerSiblings(main), true, 'siblings present must pass')
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript resolves from offline media without downloading', async () => {
+  const home = mkTmpHome()
+  const media = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-offline-media-'))
+
+  try {
+    const commit = 'c'.repeat(40)
+    fs.writeFileSync(path.join(media, SCRIPT_NAME), '#!/bin/sh\necho offline\n')
+    for (const name of installSiblingNames()) {
+      fs.writeFileSync(path.join(media, name), '# module\n')
+    }
+
+    let downloadCalls = 0
+    const logs = []
+
+    const result = await resolveInstallScript({
+      installStamp: { commit },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: ev => logs.push(ev),
+      offlineDir: media,
+      _download: async () => {
+        downloadCalls += 1
+
+        throw new Error('downloader must not be reached in offline mode')
+      }
+    })
+
+    assert.equal(result.source, 'offline')
+    assert.equal(downloadCalls, 0, 'offline resolution must not touch the network')
+    assert.ok(fs.existsSync(result.path), 'staged installer exists')
+    assert.ok(
+      logs.some(ev => /using offline/.test(ev.line || '')),
+      'emits an offline log line'
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(media, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript stages siblings next to the cached installer', async () => {
+  const home = mkTmpHome()
+  const media = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-offline-media-'))
+
+  try {
+    const commit = 'd'.repeat(40)
+    fs.writeFileSync(path.join(media, SCRIPT_NAME), '#!/bin/sh\necho offline\n')
+    for (const name of installSiblingNames()) {
+      fs.writeFileSync(path.join(media, name), '# module\n')
+    }
+
+    const result = await resolveInstallScript({
+      installStamp: { commit },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      offlineDir: media
+    })
+
+    assert.equal(result.path, cachedScriptPath(home, commit))
+    assert.equal(
+      hasInstallerSiblings(result.path),
+      true,
+      'a cached installer without its sibling cannot be used'
+    )
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(media, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript treats media without the sibling module as incomplete on PowerShell', async () => {
+  const home = mkTmpHome()
+  const media = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-offline-media-'))
+
+  try {
+    const commit = 'e'.repeat(40)
+    // Main script present, sibling absent -> media is incomplete on PowerShell.
+    fs.writeFileSync(path.join(media, SCRIPT_NAME), '#!/bin/sh\necho partial\n')
+
+    let downloadCalls = 0
+    const downloader = async () => {
+      downloadCalls += 1
+
+      throw new Error('network denied')
+    }
+
+    if (installSiblingNames().length === 0) {
+      // install.sh has no siblings, so a lone install.sh IS complete media.
+      const result = await resolveInstallScript({
+        installStamp: { commit },
+        sourceRepoRoot: null,
+        hermesHome: home,
+        emit: () => {},
+        offlineDir: media,
+        _download: downloader
+      })
+
+      assert.equal(result.source, 'offline')
+      assert.equal(downloadCalls, 0)
+    } else {
+      // PowerShell: the missing install-offline.ps1 must send us to the network.
+      await assert.rejects(
+        resolveInstallScript({
+          installStamp: { commit },
+          sourceRepoRoot: null,
+          hermesHome: home,
+          emit: () => {},
+          offlineDir: media,
+          _download: downloader
+        }),
+        /network denied/
+      )
+      assert.equal(downloadCalls, 1)
+    }
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(media, { recursive: true, force: true })
+  }
+})
+
+test('resolveInstallScript re-downloads when the cache lacks the sibling module', async () => {
+  const home = mkTmpHome()
+
+  try {
+    const commit = 'f'.repeat(40)
+    const cached = cachedScriptPath(home, commit)
+    fs.mkdirSync(path.dirname(cached), { recursive: true })
+    // Simulate a cache entry written by an older app version: main script only.
+    fs.writeFileSync(cached, '#!/bin/sh\necho stale\n')
+
+    let downloadCalls = 0
+
+    const result = await resolveInstallScript({
+      installStamp: { commit },
+      sourceRepoRoot: null,
+      hermesHome: home,
+      emit: () => {},
+      _download: async (_ref, destPath) => {
+        downloadCalls += 1
+        fs.writeFileSync(destPath, '#!/bin/sh\necho fresh\n')
+
+        return destPath
+      },
+      _downloadSibling: async (_ref, destPath) => {
+        fs.writeFileSync(destPath, '# module\n')
+
+        return destPath
+      }
+    })
+
+    if (installSiblingNames().length === 0) {
+      assert.equal(result.source, 'cache')
+      assert.equal(downloadCalls, 0)
+    } else {
+      assert.equal(result.source, 'download', 'stale cache without sibling must be refreshed')
+      assert.equal(downloadCalls, 1)
+      assert.equal(hasInstallerSiblings(result.path), true)
+    }
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }

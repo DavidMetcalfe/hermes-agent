@@ -86,7 +86,8 @@ param(
     #   PortableGit-*.7z.exe      - Git for Windows (portable)
     #   node-v*-win-*.zip         - Node.js portable zip
     #   hermes-agent.zip          - Repository archive (or git bundle)
-    #   python-wheels\            - Cached Python wheels from uv pip download
+    #   python-wheels\            - Windows/cp311 wheels realized by pip download
+    #                               (closure resolved by uv export + uv pip compile)
     #   npm-cache\                - Cached npm tarballs
     #   python-standalone\        - Standalone Python distribution (optional)
     #   offline-manifest.json     - SHA-256 checksums for integrity verification
@@ -811,6 +812,196 @@ function Get-OfflineAsset {
     return $DestinationPath
 }
 
+# ---------------------------------------------------------------------------
+# Offline manifest: single reader + single verified-asset access path.
+#
+# The offline bundle ships `offline-manifest.json` alongside its assets. The
+# integrity contract is only as strong as its weakest call site: a consumer that
+# copies or extracts a payload WITHOUT consulting the manifest (or that treats a
+# missing/malformed manifest as "proceed anyway") re-opens exactly the tampering
+# hole the digest is meant to close. Every consumer therefore goes through
+# Read-OfflineManifest + Test-OfflineAssetHash below, and verification happens
+# BEFORE any copy/extract/replace side effect.
+#
+# Policy (explicit, not incidental):
+#   * manifest present + asset listed + matching digest      -> allow
+#   * manifest present + asset missing / digest missing /
+#     duplicate entry / digest mismatch                      -> FAIL CLOSED
+#   * no manifest at all (documented hybrid fallback with
+#     -RequireManifest off)                                  -> warn and allow
+# ---------------------------------------------------------------------------
+
+# Resolve the manifest path for the current offline directory, memoized.
+function Get-OfflineManifestPath {
+    if ($OfflineDir) {
+        return (Join-Path $OfflineDir "offline-manifest.json")
+    }
+    return ""
+}
+
+# Parse the offline manifest. Returns $null when there is no manifest file.
+# Throws on unreadable/unparseable JSON so callers do not silently skip
+# integrity checking (the old behaviour caught this and proceeded).
+function Read-OfflineManifest {
+    if (-not $script:OfflineManifestRead) {
+        $script:OfflineManifestRead = $true
+        $script:OfflineManifest = $null
+        $manifestPath = Get-OfflineManifestPath
+        if ($manifestPath -and (Test-Path $manifestPath)) {
+            try {
+                $script:OfflineManifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+            } catch {
+                throw "Offline manifest at $manifestPath is not valid JSON: $($_.Exception.Message)"
+            }
+            if ($null -eq $script:OfflineManifest) {
+                throw "Offline manifest at $manifestPath is empty."
+            }
+        }
+    }
+    return $script:OfflineManifest
+}
+
+# Return the recorded digest for an offline asset, or "" when the manifest or
+# the entry is absent. Throws when the manifest lists the SAME asset name more
+# than once with conflicting digests -- an ambiguous manifest cannot authorize
+# anything.
+function Get-OfflineAssetHash {
+    param([Parameter(Mandatory = $true)][string]$Name)
+
+    $manifest = Read-OfflineManifest
+    if (-not $manifest) { return "" }
+    if (-not $manifest.PSObject.Properties.Match('assets').Count) {
+        throw "Offline manifest does not contain an 'assets' list."
+    }
+    $matches = @($manifest.assets | Where-Object { $_ -and $_.name -eq $Name })
+    if ($matches.Count -eq 0) { return "" }
+    if ($matches.Count -gt 1) {
+        $distinct = @($matches | ForEach-Object { $_.hash } | Select-Object -Unique)
+        if ($distinct.Count -gt 1) {
+            throw "Offline manifest lists '$Name' $($matches.Count) times with conflicting digests."
+        }
+    }
+    $hash = $matches[0].hash
+    if (-not $hash) { return "" }
+    return $hash.ToString()
+}
+
+# Verify an offline asset against the recorded digest and return its path.
+# Throws (fail-closed) rather than returning an unverified path.
+#
+# -RequireManifest: the asset is a REQUIRED part of the bundle, so an absent
+# manifest or absent digest is a failure. Used for uv/Git/Node/repository and
+# wheel payloads.
+# Without it (optional assets), a manifest that exists must still list the asset
+# and must match; only "no manifest at all" degrades to the documented hybrid
+# fallback.
+function Assert-OfflineAssetVerified {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$RequireManifest
+    )
+
+    $manifest = Read-OfflineManifest
+    if (-not $manifest) {
+        if ($RequireManifest) {
+            throw "Offline manifest not found at $(Get-OfflineManifestPath). Refusing to use '$Name' from $OfflineDir without an integrity manifest. Re-run with -PreDownload on a connected machine to produce one, or set HERMES_OFFLINE_ALLOW_UNVERIFIED=1 to accept unverified media."
+        }
+        Write-Warn "No offline manifest at $(Get-OfflineManifestPath); using '$Name' without integrity verification."
+        return $Path
+    }
+
+    $expected = Get-OfflineAssetHash -Name $Name
+    if (-not $expected) {
+        throw "Offline manifest does not record a SHA-256 for '$Name'. Refusing to use the unverified asset at $Path."
+    }
+    if (-not (Test-OfflineAssetHash -FilePath $Path -ExpectedHash $expected)) {
+        $actual = ""
+        if (Test-Path $Path) {
+            $actual = (Get-FileHash -Path $Path -Algorithm SHA256).Hash.ToLower()
+        }
+        throw "SHA-256 mismatch for '$Name' at $Path. Expected $($expected.ToLower()), got '$actual'. The offline media may be corrupted or tampered with."
+    }
+    return $Path
+}
+
+# Validate the staged wheel set against the manifest's per-file digests.
+# Invoke-PreDownload records `{ name = "python-wheels"; digests = [...] }`; a
+# wheel present on the media but absent from that list is unverified and must
+# not be installed.
+function Assert-OfflineWheelSetVerified {
+    param([string]$WheelsDir)
+
+    if (-not $OfflineDir) { return }
+    if ($env:HERMES_OFFLINE_ALLOW_UNVERIFIED -eq "1") {
+        Write-Warn "HERMES_OFFLINE_ALLOW_UNVERIFIED=1 -- skipping wheel digest validation."
+        return
+    }
+
+    $manifest = Read-OfflineManifest
+    if (-not $manifest) {
+        throw "Offline manifest not found at $(Get-OfflineManifestPath). Refusing to install unreferenced wheels from $WheelsDir."
+    }
+    $wheelEntries = @($manifest.assets | Where-Object { $_ -and $_.name -eq "python-wheels" })
+    if ($wheelEntries.Count -eq 0) {
+        throw "Offline manifest does not describe the python-wheels payload."
+    }
+    $digests = @($wheelEntries[0].digests)
+    if ($digests.Count -eq 0) {
+        throw "Offline manifest records no per-file wheel digests; refusing to install unverified wheels."
+    }
+    $recorded = @{}
+    foreach ($d in $digests) {
+        if ($d -and $d.file) { $recorded[[string]$d.file] = [string]$d.hash }
+    }
+
+    $wheels = @(Get-ChildItem -LiteralPath $WheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue)
+    foreach ($whl in $wheels) {
+        if (-not $recorded.ContainsKey($whl.Name)) {
+            throw "Wheel '$($whl.Name)' is present in $WheelsDir but not recorded in the offline manifest. Refusing to install it."
+        }
+        if (-not (Test-OfflineAssetHash -FilePath $whl.FullName -ExpectedHash $recorded[$whl.Name])) {
+            throw "Wheel '$($whl.Name)' failed its SHA-256 check against the offline manifest."
+        }
+    }
+    Write-Success "Verified $($wheels.Count) wheel digest(s) against the offline manifest"
+}
+
+# Verify the digest of every payload PRESENT in the offline directory before a
+# consuming stage acts on it.
+#
+# This is deliberately not a completeness requirement: a documented hybrid
+# install may legitimately carry only SOME media and fall back to the network
+# for the rest. What it does enforce is that a present payload is never used
+# unverified -- the failure class the reviewer raised, where a bundle is
+# truncated or tampered with and the installer copies it anyway because the
+# manifest reader was skipped.
+#
+# Absent optional assets are simply skipped (network fallback); present-but-
+# unverifiable ones fail closed.
+function Assert-OfflineMediaVerified {
+    param([string[]]$AssetNames)
+
+    if (-not $OfflineDir) { return }
+    if ($OfflineDir -and $env:HERMES_OFFLINE_ALLOW_UNVERIFIED -eq "1") {
+        Write-Warn "HERMES_OFFLINE_ALLOW_UNVERIFIED=1 -- skipping offline manifest validation."
+        return
+    }
+    if (-not $AssetNames -or $AssetNames.Count -eq 0) {
+        $AssetNames = @("uv.exe", "hermes-agent.bundle")
+    }
+    $verified = 0
+    foreach ($asset in $AssetNames) {
+        $assetPath = Join-Path $OfflineDir $asset
+        if (-not (Test-Path $assetPath)) { continue }
+        Assert-OfflineAssetVerified -Path $assetPath -Name $asset -RequireManifest | Out-Null
+        $verified++
+    }
+    if ($verified -gt 0) {
+        Write-Success "Verified $verified offline media payload(s) against the manifest"
+    }
+}
+
 # Test-OfflineAssetHash: verify an offline asset's SHA-256 against the manifest.
 # Fail-closed (BLOCKER 3): returns $false when no expected hash is present.
 function Test-OfflineAssetHash {
@@ -928,34 +1119,137 @@ function Invoke-PreDownload {
         $manifest.assets += @{ name = "hermes-agent.bundle"; note = "bundle creation failed" }
     }
 
-    # 5. Python wheels (cross-platform: downloads Windows wheels regardless of host OS)
-    Write-Info "[5/6] Downloading Python wheels for offline install..."
+    # 5. Python wheels (cross-platform: realizes Windows wheels regardless of host OS)
+    #
+    # Dependency closure is derived from an actual CHECKOUT of the selected pin
+    # (uv.lock + pyproject.toml), never from the builder's ambient state.
+    #
+    # There is no `uv pip download` and no `uv pip wheel`: uv cannot write .whl
+    # files at all. `uv pip install --target` resolves the target platform
+    # correctly but emits UNPACKED trees, and `--find-links` rejects those. So
+    # the staging is a three-step hybrid, each step doing the one thing it is
+    # actually good at:
+    #
+    #   1. `uv export --locked --extra all --no-emit-project`
+    #        -> lock-faithful pinned closure, read-only w.r.t. the checkout
+    #           (without --locked, uv silently REWRITES uv.lock)
+    #   2. `uv pip compile --python-platform windows --python-version 3.11`
+    #        -> re-resolve the pins FOR THE TARGET. This is the step pip cannot
+    #           do: `pip download --platform` evaluates PEP 508 markers against
+    #           the HOST interpreter, so it both pulls host-only deps (uvloop)
+    #           and silently omits target-only ones (colorama, pywin32,
+    #           pywinpty, tzdata, portalocker).
+    #   3. `pip download --only-binary=:all: --platform win_amd64 ...`
+    #        -> realize real .whl files for --find-links.
+    #
+    # setuptools+wheel are added explicitly: the offline dependency stage runs
+    # `uv pip install -e .[all]`, whose build isolation needs them, and they are
+    # NOT part of the [all] closure.
+    Write-Info "[5/6] Staging Python wheels for offline install..."
+    $stagingDir = $null
     try {
         Resolve-UvCmd
         $wheelsDir = Join-Path $TargetDir "python-wheels"
-        # Download wheels for Windows x86_64, Python 3.11 (matches install.ps1's PythonVersion)
-        # Use the staged repo artifact (bundle or a temp clone from it) for extras spec,
-        # rather than $InstallDir which hasn't been installed yet in PreDownload mode.
-        $bundleStagedPath = (Get-ChildItem $TargetDir -Filter "hermes-agent.bundle" -ErrorAction SilentlyContinue | Select-Object -First 1)
-        $extraSpec = if ($bundleStagedPath) { ".[all]" } else { ".[all]" }
-        & $script:UvCmd pip download `
-            --python-platform windows `
-            --python-version 3.11 `
-            --out-dir $wheelsDir `
-            -e $extraSpec 2>&1 | Out-Null
-        $wheelFiles = Get-ChildItem $wheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue
+        New-Item -ItemType Directory -Path $wheelsDir -Force | Out-Null
+
+        # Derive the closure from an actual checkout of the SELECTED PIN, never
+        # from the builder's ambient state or its cwd. The bundle created in step
+        # [4/6] is the pin, and cloning it is a local operation -- no network.
+        $stagingDir = Join-Path $env:TEMP ("hermes-offline-wheels-" + (Get-Random))
+        New-Item -ItemType Directory -Path $stagingDir -Force | Out-Null
+        $sourceRepo = Join-Path $stagingDir "source"
+
+        $stagedBundle = Get-ChildItem $TargetDir -Filter "hermes-agent.bundle" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (-not $stagedBundle) {
+            throw "Cannot stage wheels: no hermes-agent.bundle was produced in $TargetDir (step 4/6 must succeed first)."
+        }
+        git clone --quiet $stagedBundle.FullName $sourceRepo 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path (Join-Path $sourceRepo "pyproject.toml"))) {
+            throw "Cannot stage wheels: cloning the staged bundle at $($stagedBundle.FullName) did not yield a checkout with pyproject.toml."
+        }
+        if (-not (Test-Path (Join-Path $sourceRepo "uv.lock"))) {
+            throw "Cannot stage wheels: the checkout of the selected pin has no uv.lock, so the dependency closure is not reproducible."
+        }
+
+        $pinnedPath = Join-Path $stagingDir "pinned.txt"
+        $targetPath = Join-Path $stagingDir "windows-deps.txt"
+
+        # 1. Lock-faithful pinned closure. Absolute -o; uv also echoes the file
+        #    to stdout, so discard the success stream.
+        & $script:UvCmd export --project $sourceRepo --extra all --no-emit-project --locked -o $pinnedPath 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv export failed (exit $LASTEXITCODE) for the checkout at $sourceRepo (a stale uv.lock also fails here -- refresh the lock first)"
+        }
+        if (-not (Test-Path $pinnedPath)) {
+            throw "uv export did not produce $pinnedPath"
+        }
+
+        # 2. Re-resolve the pins for Windows/cp311, stripping host markers.
+        & $script:UvCmd pip compile $pinnedPath --python-platform windows --python-version 3.11 --no-header --generate-hashes -o $targetPath 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "uv pip compile failed (exit $LASTEXITCODE) while targeting windows/3.11"
+        }
+        if (-not (Test-Path $targetPath)) {
+            throw "uv pip compile did not produce $targetPath"
+        }
+
+        # 3. Realize .whl files. `pip download` has no -e and no --out-dir; it is
+        #    -d/--dest, and --only-binary=:all: is mandatory with --platform.
+        $downloaded = $false
+        $lastPipError = ""
+        $platformArgs = @("download", "--only-binary=:all:", "--platform", "win_amd64",
+                          "--python-version", "3.11", "--implementation", "cp", "--abi", "cp311")
+        # Preferred rung: a modern pip via `uv tool run` (the host python may be
+        # too old for --platform + --only-binary). Fallback: the host python.
+        try {
+            & $script:UvCmd tool run --from pip pip @platformArgs -r $targetPath -d $wheelsDir 2>&1 | Out-Null
+            if ($LASTEXITCODE -eq 0) { $downloaded = $true } else { $lastPipError = "uv tool run --from pip (exit $LASTEXITCODE)" }
+        } catch {
+            $lastPipError = "uv tool run --from pip: $_"
+        }
+        if (-not $downloaded -and (Get-Command python -ErrorAction SilentlyContinue)) {
+            try {
+                & python -m pip @($platformArgs | Select-Object -Skip 1) -r $targetPath -d $wheelsDir 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) { $downloaded = $true } else { $lastPipError = "python -m pip (exit $LASTEXITCODE)" }
+            } catch {
+                $lastPipError = "python -m pip: $_"
+            }
+        }
+        if (-not $downloaded) {
+            throw "Could not realize Windows wheels ($lastPipError)"
+        }
+
+        # Build isolation for the offline `-e .[all]` install needs these; they
+        # are NOT part of the [all] closure.
+        & $script:UvCmd tool run --from pip pip download --only-binary=:all: --python-version 3.11 -d $wheelsDir setuptools wheel 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warn "  Could not stage setuptools/wheel; the offline editable install may fail to build"
+        }
+
+        $wheelFiles = @(Get-ChildItem $wheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue)
         $wheelCount = $wheelFiles.Count
+        if ($wheelCount -eq 0) {
+            throw "Staging produced no .whl files in $wheelsDir"
+        }
         $wheelDigests = @()
         foreach ($whl in $wheelFiles) {
             $whlHash = (Get-FileHash $whl.FullName -Algorithm SHA256).Hash
             $wheelDigests += @{ file = $whl.Name; hash = $whlHash }
         }
         $manifest.assets += @{ name = "python-wheels"; count = $wheelCount; digests = $wheelDigests }
-        Write-Success "  $wheelCount Python wheels downloaded (per-file digests recorded)"
+        Write-Success "  $wheelCount Python wheels staged from $sourceRepo (per-file digests recorded)"
     } catch {
         $failures++
-        Write-Warn "  Failed to download Python wheels: $_"
-        Write-Info "  You can manually run: uv pip download --python-platform windows --python-version 3.11 --out-dir `"$TargetDir\python-wheels`" -e .[all] (use staged repo bundle or installed repo for extras spec)"
+        Write-Warn "  Failed to stage Python wheels: $_"
+        Write-Info "  Manual recovery (run on a networked machine, from a checkout of the selected pin):"
+        Write-Info "    uv export --project <checkout> --extra all --no-emit-project --locked -o pinned.txt"
+        Write-Info "    uv pip compile pinned.txt --python-platform windows --python-version 3.11 --generate-hashes --no-header -o windows-deps.txt"
+        Write-Info "    uv tool run --from pip pip download --only-binary=:all: --platform win_amd64 --python-version 3.11 --implementation cp --abi cp311 -r windows-deps.txt -d `"$TargetDir\python-wheels`""
+        Write-Info "    uv tool run --from pip pip download --only-binary=:all: --python-version 3.11 setuptools wheel -d `"$TargetDir\python-wheels`""
+    } finally {
+        if ($stagingDir -and (Test-Path $stagingDir)) {
+            Remove-Item -Recurse -Force $stagingDir -ErrorAction SilentlyContinue
+        }
     }
 
     # 6. npm cache (BLOCKER 2 -- explicit fail-closed since full offline npm requires registry access)
@@ -1009,27 +1303,10 @@ function Install-Uv {
     if ($OfflineDir) {
         $offlineUv = Join-Path $OfflineDir "uv.exe"
         if (Test-Path $offlineUv) {
-            # Verify SHA-256 if manifest exists
-            $manifestPath = Join-Path $OfflineDir "offline-manifest.json"
-            if (Test-Path $manifestPath) {
-                $offlineManifest = $null
-                $uvAsset = $null
-                try {
-                    $offlineManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-                } catch {
-                    # Manifest parse error -- proceed without hash check
-                }
-                if ($offlineManifest) {
-                    $uvAsset = $offlineManifest.assets | Where-Object { $_.name -eq "uv.exe" }
-                }
-                $expectedHash = if ($uvAsset) { $uvAsset.hash } else { $null }
-                if ($expectedHash -and -not (Test-OfflineAssetHash -FilePath $offlineUv -ExpectedHash $expectedHash)) {
-                    Write-Err "SHA-256 mismatch for uv.exe -- offline asset may be corrupted"
-                    Write-Err "Expected: $expectedHash"
-                    Write-Err "Actual:   $((Get-FileHash $offlineUv -Algorithm SHA256).Hash.ToLower())"
-                    throw "Offline asset integrity check failed"
-                }
-            }
+            # Verify BEFORE the copy below. A missing/malformed manifest, a
+            # missing entry, or a missing digest all fail closed -- see
+            # Assert-OfflineAssetVerified.
+            Assert-OfflineAssetVerified -Path $offlineUv -Name "uv.exe" -RequireManifest | Out-Null
             Write-Info "Installing uv from offline bundle..."
             New-Item -ItemType Directory -Path (Join-Path $HermesHome "bin") -Force | Out-Null
             Copy-Item $offlineUv $managedUv -Force
@@ -1817,25 +2094,11 @@ function Install-Git {
         # Offline-aware download: check OfflineDir first (BLOCKER 3 -- verify hash)
         if ($OfflineDir -and (Test-Path (Join-Path $OfflineDir $assetName))) {
             Write-Info "Installing Git from offline bundle: $assetName"
-            # Verify SHA-256 against manifest before copying.
-            $manifestPath = Join-Path $OfflineDir "offline-manifest.json"
             $offlineAssetPath = Join-Path $OfflineDir $assetName
-            if (Test-Path $manifestPath) {
-                $offlineManifest = $null
-                $gitAsset = $null
-                try {
-                    $offlineManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
-                } catch {
-                    # Manifest parse error -- proceed without hash check
-                }
-                if ($offlineManifest) {
-                    $gitAsset = $offlineManifest.assets | Where-Object { $_.name -eq $assetName }
-                }
-                $expectedHash = if ($gitAsset) { $gitAsset.hash } else { $null }
-                if ($expectedHash -and -not (Test-OfflineAssetHash -FilePath $offlineAssetPath -ExpectedHash $expectedHash)) {
-                    throw "Offline Git asset SHA-256 mismatch -- asset may be corrupted"
-                }
-            }
+            # Fail closed BEFORE copying: missing manifest, missing entry, and
+            # missing digest are all authorization failures, not reasons to skip
+            # the check.
+            Assert-OfflineAssetVerified -Path $offlineAssetPath -Name $assetName -RequireManifest | Out-Null
             Copy-Item $offlineAssetPath $tmpFile -Force
         } else {
             Write-Info "Downloading $assetName (Git for Windows $gitVerTag)..."
@@ -2087,8 +2350,15 @@ function Test-Node {
         if ($offlineNodeZip) {
             $zipName = $offlineNodeZip.Name
             Write-Info "Using offline Node.js: $zipName"
-            $tmpZip = $offlineNodeZip.FullName
+            # Copy the media ZIP to an installer-owned temp file. $tmpZip is
+            # deleted on both the success and failure paths below, and the source
+            # here lives on the reusable offline media -- pointing $tmpZip at it
+            # would consume the artifact out of the bundle and leave the manifest
+            # describing a file that no longer exists.
             $tmpDir = "$env:TEMP\hermes-node-extract"
+            if (-not (Test-Path $tmpDir)) { New-Item -ItemType Directory -Path $tmpDir -Force | Out-Null }
+            $tmpZip = Join-Path $tmpDir $zipName
+            Copy-Item -LiteralPath $offlineNodeZip.FullName -Destination $tmpZip -Force
         } else {
             $indexUrl = "https://nodejs.org/dist/latest-v${NodeVersion}.x/"
             $indexPage = Invoke-WebRequest -Uri $indexUrl -UseBasicParsing
@@ -2460,6 +2730,13 @@ function Install-SystemPackages {
 function Install-Repository {
     Write-Info "Installing to $InstallDir..."
 
+    # Verify every payload the media actually carries BEFORE any stage copies,
+    # extracts, or replaces anything. Present-but-unverifiable media fails here;
+    # absent media degrades to the network path.
+    if ($OfflineDir) {
+        Assert-OfflineMediaVerified -AssetNames @("uv.exe", "hermes-agent.bundle")
+    }
+
     $didUpdate = $false
 
     if (Test-Path $InstallDir) {
@@ -2711,6 +2988,10 @@ function Install-Repository {
             $offlineRepoBundle = Join-Path $OfflineDir "hermes-agent.bundle"
             if (Test-Path $offlineRepoBundle) {
                 Write-Info "Installing repository from offline bundle..."
+                # Validate the bundle's recorded digest BEFORE Install-RepositoryFromBundle
+                # parks the existing checkout -- an unverified payload must not be
+                # allowed to displace a working install.
+                Assert-OfflineAssetVerified -Path $offlineRepoBundle -Name "hermes-agent.bundle" -RequireManifest | Out-Null
                 try {
                     # Source the bounded module for bundle-based installation.
                     . (Join-Path $PSScriptRoot "install-offline.ps1")
@@ -3211,18 +3492,38 @@ function Install-Dependencies {
 
     Push-Location $InstallDir
 
+    # Initialize before the tier-0 block: this is read further down no matter
+    # which branch sets it, and under Set-StrictMode an uninitialized read is a
+    # terminating error rather than $null.
+    $skipPipFallback = $false
+    $offlineTier = ""
+
     if (-not $NoVenv) {
         # Tell uv to install into our venv (no activation needed)
         $env:VIRTUAL_ENV = "$InstallDir\venv"
     }
 
-    # Offline mode: install from pre-downloaded wheels
+    # Offline mode: install from pre-downloaded wheels.
+    #
+    # This is a transport substitution for the tiers below, NOT an early exit.
+    # It must not `return` on success: everything after this point is the
+    # contract every other tier obeys -- the baseline-import gate through the
+    # target venv's own interpreter, the single Complete-VenvTransaction commit,
+    # and console-entry-point validation/repair. Returning here would make
+    # "offline" a weaker success condition than "online" and leave the venv
+    # transaction uncommitted (the parked previous venv never gets retired).
+    #
+    # It also installs the same curated `.[all]` spec that Invoke-PreDownload
+    # stages wheels for; a bare "." install would succeed while silently
+    # dropping every extra the bundle was built to carry.
     if ($OfflineDir) {
         $wheelsDir = Join-Path $OfflineDir "python-wheels"
         if (Test-Path $wheelsDir) {
             $wheelCount = (Get-ChildItem $wheelsDir -Filter "*.whl" -ErrorAction SilentlyContinue).Count
             if ($wheelCount -gt 0) {
                 Write-Info "Installing $wheelCount Python wheels from offline bundle..."
+                # Per-file digest validation before uv consumes the directory.
+                Assert-OfflineWheelSetVerified -WheelsDir $wheelsDir
                 try {
                     Resolve-UvCmd
                     if (-not $NoVenv) {
@@ -3231,13 +3532,20 @@ function Install-Dependencies {
                             $env:UV_PYTHON = $venvPythonExe
                         }
                     }
-                    Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --no-index --find-links $wheelsDir -e "." }
-                    if ($LASTEXITCODE -eq 0) {
-                        Write-Success "Python dependencies installed from offline wheels"
-                        Pop-Location
-                        return
+                    foreach ($offlineSpec in @(".[all]", ".")) {
+                        Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install --no-index --find-links $wheelsDir -e $offlineSpec }
+                        if ($LASTEXITCODE -eq 0) {
+                            $offlineTier = "offline wheels ($offlineSpec)"
+                            break
+                        }
+                        Write-Warn "Offline wheel install of $offlineSpec failed (exit $LASTEXITCODE)"
                     }
-                    Write-Warn "Offline wheel install failed (exit $LASTEXITCODE) -- falling back to network..."
+                    if ($offlineTier) {
+                        Write-Success "Python dependencies installed from offline wheels ($offlineTier)"
+                        $script:InstalledTier = $offlineTier
+                    } else {
+                        Write-Warn "Offline wheel install failed -- falling back to network..."
+                    }
                 } catch {
                     Write-Warn "Offline wheel install error: $_ -- falling back to network..."
                 }
@@ -3364,7 +3672,11 @@ except Exception:
         @{ Name = "core only (no extras)"; Spec = "." }
     )
     $installed = $skipPipFallback
-    if (-not $skipPipFallback) {
+    if ($offlineTier) {
+        # The offline tier already satisfied the dependency stage; skip the
+        # network tiers but fall through to the shared gates below.
+        $installed = $true
+    } elseif (-not $skipPipFallback) {
         foreach ($tier in $installTiers) {
         Write-Info "Trying tier: $($tier.Name) ..."
         Invoke-NativeWithRelaxedErrorAction { & $UvCmd pip install -e $tier.Spec }
