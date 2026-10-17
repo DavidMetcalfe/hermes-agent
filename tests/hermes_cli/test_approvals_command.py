@@ -108,10 +108,3 @@ def test_sanctioned_repl_process_command_persists(tmp_path, monkeypatch):
 
     cfg = yaml.safe_load(config_file.read_text(encoding="utf-8"))
     assert (cfg.get("approvals") or {}).get("mode") == "off"
-
-
-
-
-
-
-

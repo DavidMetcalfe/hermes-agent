@@ -1326,7 +1326,7 @@ class TestSensitiveConfigKeyGuard:
         env.pop("HERMES_YOLO_MODE", None)
         proc = subprocess.run(
             [sys.executable, "-m", "hermes_cli.main", "config", "set", key, value],
-            env=env, capture_output=True, text=True, timeout=300,
+            env=env, capture_output=True, text=True, timeout=300, check=False,
         )
         assert proc.returncode != 0
         assert "security policy" in proc.stderr

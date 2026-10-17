@@ -69,3 +69,23 @@ def run_approval_mode_command(requested_mode: Optional[str]) -> ApprovalModeResu
     return ApprovalModeResult(
         True, effective, effective != current, f"Approval mode: {effective} (persistent profile setting).",
     )
+
+
+def handle_repl_approvals_command(cmd_original: str, _cp) -> None:
+    """Handle the interactive REPL /approvals command."""
+    parts = (cmd_original or "").strip().split(None, 1)
+    if len(parts) <= 1:
+        result = run_approval_mode_command(None)
+        _cp(f"  {result.message}")
+        return
+    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+    try:
+        token = grant_operator_policy_write()
+    except RuntimeError as exc:
+        _cp(f"  ✗ {exc}")
+        return
+    try:
+        result = run_approval_mode_command(parts[1])
+    finally:
+        reset_operator_policy_write(token)
+    _cp(f"  {result.message}")

@@ -8,8 +8,10 @@ gate in :mod:`tools.approval`.
 import contextvars
 import logging
 import os
+import sys
 from agent.i18n import t
 from hermes_cli.config import cfg_get
+from hermes_cli.config_policy import is_sanctioned_stamp_frame
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger("tools.approval")
@@ -393,7 +395,8 @@ def _get_approval_transport_config() -> tuple[str, str | None]:
 #
 # Both ends are here, and the writer additionally requires a SANCTIONED CALLER
 # FRAME (a human-input handler frame on the live stack — see
-# hermes_cli.config._policy_write_authorized). Why this shape (and not a
+# hermes_cli.config_policy._policy_write_authorized, which owns the write-side
+# table in _SANCTIONED_WRITE_FRAMES; the stamp-side table here is narrower). Why this shape (and not a
 # parameter, an env var, or a reusable boolean scope): the #104697 review
 # established that any *reusable* importable token is forgeable by the agent
 # process that can import the writer (#104059 class). A one-shot grant is
@@ -424,6 +427,8 @@ def _is_sanctioned_policy_stamp_caller() -> bool:
     - REPL / TUI slash worker: process_command in cli.py
     - Gateway: _handle_approvals_command in gateway/slash_commands.py (behind admin check)
     - TUI RPC: _tui_policy_write in tui_gateway/methods_config_set.py (human renderer RPC)
+    - Gateway RPC: _set_approval_mode in gateway/session_tui_config.py (the same
+      authenticated renderer path, for the commands a slash command owns)
 
     Frame inspection forecloses casual import-and-call: a bare
     grant_operator_policy_write() from agent-executed Python is refused.
@@ -434,22 +439,18 @@ def _is_sanctioned_policy_stamp_caller() -> bool:
     residuals (#104697 review round 7); the enforceable boundary for
     worker-executable code is out-of-process.
     """
-    import inspect
-    stack = inspect.stack()
-    for frame_info in stack:
-        fn = frame_info.function
-        raw_path = frame_info.filename or ""
-        path = raw_path.replace(os.sep, "/")
+    # Walk frames directly (co_name/co_filename) instead of inspect.stack(), which reads each
+    # frame's source file from disk — real-home I/O the test harness rejects, plus a disk read
+    # per frame on every policy write.
+    frame = sys._getframe(1)
+    while frame is not None:
+        fn = frame.f_code.co_name
+        path = (frame.f_code.co_filename or "").replace(os.sep, "/")
         if fn == "process_command" and (path.endswith("/cli.py") or path == "cli.py"):
             return True
-        if fn == "_handle_approvals_command" and (
-            path.endswith("/gateway/slash_commands.py") or path.endswith("gateway/slash_commands.py")
-        ):
+        if is_sanctioned_stamp_frame(fn, path):
             return True
-        if fn == "_tui_policy_write" and (
-            path.endswith("/tui_gateway/methods_config_set.py") or path.endswith("tui_gateway/methods_config_set.py")
-        ):
-            return True
+        frame = frame.f_back
     return False
 
 
@@ -471,4 +472,3 @@ def reset_operator_policy_write(token: "contextvars.Token[bool]") -> None:
 def is_operator_policy_write() -> bool:
     """True inside an operator-qualified write scope (see module comment)."""
     return _operator_policy_write_ctx.get()
-

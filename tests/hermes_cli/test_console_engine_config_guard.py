@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """
 Test that the console_engine _config_set path (alternate CLI entrypoint)
 also refuses security-sensitive keys — the guard lives inside
@@ -9,9 +8,12 @@ entrypoint (console_engine's `config set`) reaches set_config_value
 without going through config_command's CLI-level sensitive-key check.
 The in-set_config_value guard (#81101) must independently refuse.
 """
-import sys
 import io
+import sys
+
 import pytest
+
+SENTINEL = "after-guard-reached"
 
 
 class TestConsoleEngineSensitiveKeyGuard:
@@ -47,30 +49,54 @@ class TestConsoleEngineSensitiveKeyGuard:
         assert not _is_sensitive_config_key("provider.openai.api_key")
         assert not _is_sensitive_config_key("ui.theme")
 
-    def test_operator_scope_skips_guard(self, operator_write_scope, monkeypatch):
-        """The sanctioned operator path (operator scope + human present) must
-        NOT trigger the sensitive-key refusal — it proceeds past the guard."""
+    def test_operator_scope_skips_guard(self, operator_write_scope, monkeypatch, tmp_path):
+        """The sanctioned operator path must NOT trigger the sensitive-key refusal —
+        it must run on past the guard.
+
+        ``is_managed=True`` returns at the top of ``set_config_value``, BEFORE the
+        guard, so that would prove nothing. Instead, keep managed mode off and stop
+        at the first helper after the guard: reaching ``_is_env_config_key`` proves
+        execution passed the policy check, and ``_refuse_sensitive_config_key`` not
+        firing proves the guard allowed it.
+        """
         import hermes_cli.config as cfg
+        import hermes_cli.config_policy as cfg_policy
+
+        # Isolated store: the write now runs past the early return, so nothing may
+        # touch the real home (the suite's hermetic guard enforces that).
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg._LOAD_CONFIG_CACHE.clear()
+        cfg._RAW_CONFIG_CACHE.clear()
 
         refuse_called = False
+        reached = []
 
         def spy_refuse(*args, **kwargs):
             nonlocal refuse_called
             refuse_called = True
             raise SystemExit(1)
 
-        monkeypatch.setattr(cfg, "_refuse_sensitive_config_key", spy_refuse)
-        # Short-circuit after the guard: is_managed exits before any write
-        monkeypatch.setattr(cfg, "is_managed", lambda: True)
+        def spy_after_guard(key):
+            reached.append(key)
+            raise SystemExit(SENTINEL)
+
+        # The refusal and its authorization check live in config_policy (owned by
+        # check_policy_write); the post-guard step is config's own dispatcher.
+        monkeypatch.setattr(cfg_policy, "_refuse_sensitive_config_key", spy_refuse)
+        monkeypatch.setattr(cfg, "_is_env_config_key", spy_after_guard)
+        # Managed-mode detection reads the host install; pin it off so the guard under
+        # test is the only thing that can produce the refusal.
+        monkeypatch.setattr(cfg, "is_managed", lambda: False)
+        monkeypatch.setattr(cfg, "_exit_if_key_managed", lambda key, action: None)
 
         err = io.StringIO()
         monkeypatch.setattr(sys, "stderr", err)
 
-        try:
+        with pytest.raises(SystemExit) as exc_info:
             cfg.set_config_value("approvals.mode", "off")
-        except SystemExit:
-            pass  # is_managed exits — that's AFTER the guard, which is what we test
 
+        assert exc_info.value.code == SENTINEL, "write did not proceed past the policy guard"
+        assert reached == ["approvals.mode"], "after-guard path was not reached"
         assert not refuse_called, \
             "the operator-qualified scope must NOT trigger the sensitive-key refusal"
 

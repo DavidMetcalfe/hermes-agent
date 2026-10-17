@@ -191,26 +191,25 @@ def operator_write_scope(monkeypatch):
     the one-shot grant AND satisfy the sanctioned-caller-chain check. The writer's
     frame check requires a _handle_approvals_command frame (gateway or REPL
     mixin); tests calling set_config_value directly satisfy it via a chain shim
-    on _policy_write_authorized (test-only; the real handlers satisfy the check
-    with their live frames, covered by the handler-chain tests)."""
-    import hermes_cli.config as _cfg
-    from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
+    on ``hermes_cli.config_policy._policy_write_authorized`` (test-only; the real
+    handlers satisfy the check with their live frames, covered by the
+    handler-chain tests)."""
+    from tools.approval_context import (
+        grant_operator_policy_write,
+        is_operator_policy_write,
+        reset_operator_policy_write,
+    )
 
     monkeypatch.setattr("tools.approval_context._is_sanctioned_policy_stamp_caller", lambda: True)
     token = grant_operator_policy_write()
-    orig = _cfg._policy_write_authorized
-
-    def _sanctioned_chain_present():
-        if not token_granted():
-            return False
-        return True
-
-    def token_granted():
-        from tools.approval_context import is_operator_policy_write
-        return is_operator_policy_write()
 
     # Direct-writer tests simulate the handler's grant; the frame check's real
-    # coverage lives in the handler-chain tests (gateway/REPL e2e).
-    monkeypatch.setattr(_cfg, "_policy_write_authorized", _with_chain := (lambda: token_granted() or orig()))
+    # coverage lives in the handler-chain tests (gateway/REPL e2e). Patch in the
+    # module that actually evaluates it — config_policy owns the check since the
+    # #104697 extraction, so patching hermes_cli.config would be a no-op.
+    monkeypatch.setattr(
+        "hermes_cli.config_policy._policy_write_authorized",
+        lambda: is_operator_policy_write(),
+    )
     yield token
     reset_operator_policy_write(token)

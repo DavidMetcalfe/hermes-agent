@@ -50,7 +50,6 @@ def test_tui_policy_write_without_transport_refused(isolated_home):
     """The funnel requires the live gateway RPC transport: a process that never
     bound one (agent kernel child importing this module directly) cannot mint
     the grant (#104697 round-5 review, Pro F1/F3)."""
-    token = transport.current_transport()
     # simulate the kernel child: no transport bound in this context
     reset_token = transport.bind_transport(None)
     try:
@@ -125,3 +124,34 @@ def test_tui_rpc_config_set_yolo_global_persists(isolated_home):
 
     cfg = yaml.safe_load(isolated_home.read_text(encoding="utf-8"))
     assert (cfg.get("approvals") or {}).get("mode") == "off"
+
+
+def test_sanctioned_frame_tables_cover_every_human_input_surface():
+    """Every surface that stamps a grant must also satisfy the writer's caller check.
+
+    ``_set_approval_mode`` is the gateway RPC behind the commands a slash command
+    owns (the path Ink and Desktop use). Without its entry the writer refuses every
+    ``/approvals`` write from the renderer as ``storage_unavailable``.
+    """
+    from hermes_cli.config_policy import is_sanctioned_stamp_frame, is_sanctioned_write_frame
+
+    stamp_surfaces = {
+        "_handle_approvals_command": ("/src/hermes-agent/gateway/slash_commands.py",),
+        "_tui_policy_write": ("/src/hermes-agent/tui_gateway/methods_config_set.py",),
+        "_set_approval_mode": ("/src/hermes-agent/gateway/session_tui_config.py",),
+    }
+    for name, paths in stamp_surfaces.items():
+        assert all(is_sanctioned_stamp_frame(name, p) for p in paths), name
+        assert all(is_sanctioned_write_frame(name, p) for p in paths), name
+
+    # The REPL handler may satisfy the WRITE check through the mixin, but must not be
+    # able to stamp its own grant: an unbound call has no process_command frame.
+    repl = "/src/hermes-agent/hermes_cli/cli_commands_mixin.py"
+    assert is_sanctioned_write_frame("_handle_approvals_command", repl)
+    assert not is_sanctioned_stamp_frame("_handle_approvals_command", repl)
+
+    # Same function name from a module that is not a human-input surface: refused.
+    assert not is_sanctioned_write_frame("_set_approval_mode", "/src/hermes-agent/tools/approval.py")
+    assert not is_sanctioned_stamp_frame("_set_approval_mode", "/src/hermes-agent/tools/approval.py")
+    assert not is_sanctioned_stamp_frame("_handle_approvals_command", "/src/hermes-agent/tests/x.py")
+    assert not is_sanctioned_write_frame("set_config_value", "/src/hermes-agent/hermes_cli/config.py")

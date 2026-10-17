@@ -302,12 +302,17 @@ def _tui_policy_write(key: str, value: str) -> None:
         raise RuntimeError(
             "TUI policy write requires the live gateway RPC transport; "
             "direct calls are not sanctioned")
-    from hermes_cli.config import set_config_value
+    from hermes_cli.approval_mode import run_approval_mode_command
     from tools.approval_context import grant_operator_policy_write, reset_operator_policy_write
 
     token = grant_operator_policy_write()
     try:
-        set_config_value(key, value)
+        # Both callers pass approvals.mode; run_approval_mode_command also catches the
+        # SystemExit a pinned/managed key raises, so a refusal here becomes an RPC error
+        # rather than a silent no-op reported as success.
+        res = run_approval_mode_command(value)
+        if not res.ok:
+            raise RuntimeError(res.message)
     finally:
         reset_operator_policy_write(token)
 
@@ -415,6 +420,7 @@ def _word_setters() -> dict:
                                   lambda w: _write_config_key("voice.voice_chat_mode", w))}
 
 
+@_cfgset_guarded
 def _set_word(rid, params, key, value, session):
     norm, allowed, err, apply = _word_setters()[key]
     raw = norm(value)
