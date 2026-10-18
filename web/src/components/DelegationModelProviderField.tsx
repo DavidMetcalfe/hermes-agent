@@ -29,6 +29,11 @@ function selectValueFor(provider: string, model: string): string {
 interface DelegationValue {
   model: string;
   provider: string;
+  /** When true, the caller also clears stale `delegation.base_url` /
+   *  `delegation.api_key` — leaving a direct endpoint behind would keep
+   *  routing to the old endpoint (resolver direct-endpoint branch takes
+   *  precedence), so a completed route transition must drop it. */
+  resetDirectEndpoint?: boolean;
 }
 
 /**
@@ -154,8 +159,10 @@ export function DelegationModelProviderField({
     lastEmittedRef.current = { provider: persistedProvider, model: persistedModel }
   }, [persistedProvider, persistedModel])
 
-  const commit = (next: { provider: string; model: string }) => {
-    lastEmittedRef.current = next
+  const commit = (next: DelegationValue) => {
+    const { resetDirectEndpoint: _reset, ...pair } = next
+    void _reset
+    lastEmittedRef.current = pair
     onChange(next)
   }
 
@@ -231,19 +238,20 @@ export function DelegationModelProviderField({
             // Full inherit — clear both fields locally and commit.
             setDraftProvider("")
             setDraftModel("")
-            commit({ provider: "", model: "" })
+            commit({ provider: "", model: "", resetDirectEndpoint: true })
           } else if (next === MODEL_ONLY_VALUE) {
             // Model-only — clear the provider, keep the current draft
             // model (preserves whatever the user typed mid-edit) so the
             // resolver sees a coherent `provider="", model="…"` pair.
             setDraftProvider("")
-            commit({ provider: "", model: draftModel })
+            commit({ provider: "", model: draftModel, resetDirectEndpoint: true })
           } else {
-            // Switching to an explicit provider clears the model — the old
-            // provider's model wouldn't resolve at the gateway.
+            // Switching providers is a local draft until a model is picked:
+            // keep the selection in the dropdown only so an unfinished
+            // `{provider, model: ""}` pair never reaches the saveable
+            // parent config.
             setDraftProvider(next)
             setDraftModel("")
-            commit({ provider: next, model: "" })
           }
         }}
       >
@@ -281,7 +289,7 @@ export function DelegationModelProviderField({
             className="text-xs"
             onChange={(e) => {
               setDraftModel(e.target.value)
-              commit({ provider: "", model: e.target.value })
+              commit({ provider: "", model: e.target.value, resetDirectEndpoint: true })
             }}
             placeholder={c.delegationCustomModelPlaceholder}
             value={draftModel}
@@ -298,7 +306,7 @@ export function DelegationModelProviderField({
             className="text-xs"
             onChange={(e) => {
               setDraftModel(e.target.value)
-              commit({ provider: draftProvider, model: e.target.value })
+              commit({ provider: draftProvider, model: e.target.value, resetDirectEndpoint: true })
             }}
             placeholder={c.delegationCustomModelPlaceholder}
             value={draftModel}
@@ -311,7 +319,7 @@ export function DelegationModelProviderField({
             value={draftModel}
             onValueChange={(next) => {
               setDraftModel(next)
-              commit({ provider: draftProvider, model: next })
+              commit({ provider: draftProvider, model: next, resetDirectEndpoint: true })
             }}
           >
             {modelItems.map((model) => (

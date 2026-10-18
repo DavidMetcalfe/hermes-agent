@@ -430,14 +430,24 @@ export default function ConfigPage() {
                   // Single merged update — both `delegation.model` and
                   // `delegation.provider` change in one `setConfig` call so
                   // no transient invalid pair can be observed by a re-render
-                  // between two separate updates.
-                  setConfig(prev =>
-                    setNestedValue(
-                      setNestedValue(prev ?? {}, "delegation.model", next.model),
-                      "delegation.provider",
-                      next.provider,
-                    ),
-                  )
+                  // between two separate updates. A completed route
+                  // transition also drops a stale direct endpoint
+                  // (`base_url`/`api_key` take precedence in the resolver),
+                  // so Inherit/model-only/provider picks can't keep routing
+                  // to the old endpoint.
+                  setConfig(prev => {
+                    let merged: Record<string, unknown> =
+                      setNestedValue(
+                        setNestedValue(prev ?? {}, "delegation.model", next.model),
+                        "delegation.provider",
+                        next.provider,
+                      )
+                    if (next.resetDirectEndpoint) {
+                      merged = setNestedValue(merged, "delegation.base_url", "")
+                      merged = setNestedValue(merged, "delegation.api_key", "")
+                    }
+                    return merged
+                  })
                 }}
               />
             ) : key === "delegation.provider" ? (
