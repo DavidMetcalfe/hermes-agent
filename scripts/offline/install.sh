@@ -21,6 +21,7 @@ MANIFEST=""
 DEST="${HERMES_INSTALL_DIR:-$HOME/.hermes}"
 LINK_DIR="${HERMES_BIN_DIR:-$HOME/.local/bin}"
 VERIFY=1
+VERIFY_TARGET=1
 WRITE_SHELL=1
 DRY_RUN=0
 
@@ -34,6 +35,7 @@ usage: install.sh --archive <payload.tar.gz> [options]
   --dest DIR       where to unpack the payload (default: $HERMES_INSTALL_DIR or ~/.hermes)
   --bin-dir DIR    where to link the hermes launchers (default: ~/.local/bin)
   --no-verify      skip digest verification (NOT recommended; disables the transfer check)
+  --no-target-check skip target match check (use for cross-arch staging)
   --no-shell       do not add ~/.local/bin to your shell rc files
   --dry-run        print what would happen, change nothing
   -h, --help       this message
@@ -50,7 +52,8 @@ while [ $# -gt 0 ]; do
         --manifest)  MANIFEST="${2:-}"; shift 2 ;;
         --dest)      DEST="${2:-}"; shift 2 ;;
         --bin-dir)   LINK_DIR="${2:-}"; shift 2 ;;
-        --no-verify) VERIFY=0; shift ;;
+        --no-verify) VERIFY=0; VERIFY_TARGET=0; shift ;;
+        --no-target-check) VERIFY_TARGET=0; shift ;;
         --no-shell)  WRITE_SHELL=0; shift ;;
         --dry-run)   DRY_RUN=1; shift ;;
         -h|--help)   usage; exit 0 ;;
@@ -107,6 +110,45 @@ hash_file() {
     fi
 }
 
+# ------------------------------------------------------------------ target ----
+# A payload pins the interpreter, wheels and native binaries of its build
+# machine. Installing a mismatched target fails later in confusing ways
+# (an exec-format error at the --version gate), after DEST was already
+# mutated — so refuse it here, before extraction. Matches pm/store.py
+# current_target() vocabulary: <os>-<arch>[-<libc>].
+detect_host_target() {
+    os="$(uname -s 2>/dev/null || echo unknown)"
+    machine="$(uname -m 2>/dev/null || echo unknown)"
+    case "$os" in
+        Linux) os="linux" ;;
+        Darwin) os="darwin" ;;
+        MINGW*|MSYS*|CYGWIN*|Windows*) os="win32" ;;
+        *) printf '%s' "unknown"; return 0 ;;
+    esac
+    case "$machine" in
+        x86_64|amd64|x64) arch="x64" ;;
+        arm64|aarch64) arch="arm64" ;;
+        *) printf '%s' "unknown"; return 0 ;;
+    esac
+    printf '%s-%s' "$os" "$arch"
+}
+
+normalize_target() {
+    printf '%s' "$1" | sed -e 's/x86_64/x64/g' -e 's/amd64/x64/g' -e 's/aarch64/arm64/g'
+}
+
+target_matches_host() {
+    expected="$(normalize_target "$1")"
+    host="$(normalize_target "$2")"
+    # Exact match, or expected is a libc-qualified variant of the host
+    # (linux-x64-bionic on a linux-x64 host): same os-arch prefix.
+    [ "$expected" = "$host" ] && return 0
+    case "$expected" in
+        "$host"-*) return 0 ;;
+    esac
+    return 1
+}
+
 step "Payload archive"
 log "archive:  $ARCHIVE"
 log "target:   ${TARGET:-unknown}"
@@ -132,6 +174,22 @@ if [ "$VERIFY" = 1 ]; then
     fi
 else
     log "sha256:   SKIPPED (--no-verify)"
+fi
+
+if [ "$VERIFY_TARGET" = 1 ]; then
+    HOST_TARGET="$(detect_host_target)"
+    if [ -z "$TARGET" ]; then
+        fail "manifest records no target; re-pack, or pass --no-target-check to override"
+    fi
+    if [ "$HOST_TARGET" = "unknown" ]; then
+        log "host target unknown (uname: $(uname -s 2>/dev/null || echo ?)/$(uname -m 2>/dev/null || echo ?)); skipping target check"
+    elif ! target_matches_host "$TARGET" "$HOST_TARGET"; then
+        fail "payload target '$TARGET' does not match this host '$HOST_TARGET'; transfer the $HOST_TARGET payload, or pass --no-target-check to override"
+    else
+        log "target:   $TARGET matches host $HOST_TARGET"
+    fi
+else
+    log "target:   SKIPPED (--no-target-check)"
 fi
 
 # ------------------------------------------------------------------ extract ---

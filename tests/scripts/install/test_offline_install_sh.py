@@ -9,6 +9,7 @@ unrelated `hermes` already on PATH is left alone.
 from __future__ import annotations
 
 import json
+import platform
 import subprocess
 import sys
 import tarfile
@@ -26,8 +27,18 @@ sys.path.insert(0, str(ROOT))
 from scripts.offline import pack  # noqa: E402
 
 
-def make_transfer(tmp_path: Path, *, target: str = "linux-x64") -> tuple[Path, Path]:
+def _host_target() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    os_name = {"linux": "linux", "darwin": "darwin"}.get(system, system)
+    arch = {"x86_64": "x64", "amd64": "x64", "x64": "x64",
+            "arm64": "arm64", "aarch64": "arm64"}.get(machine, machine)
+    return f"{os_name}-{arch}"
+
+
+def make_transfer(tmp_path: Path, *, target: str | None = None) -> tuple[Path, Path]:
     """Build a real archive + manifest pair with the real packer."""
+    target = target or _host_target()
     payload = tmp_path / "payload"
     for name in ("hermes-agent", "tools", "pm-runtime", "venv", "uv-cache"):
         (payload / name).mkdir(parents=True, exist_ok=True)
@@ -151,3 +162,34 @@ def test_archive_without_a_manifest_is_refused(tmp_path):
 
     assert result.returncode != 0
     assert "manifest" in result.stderr.lower()
+
+
+def _wrong_target() -> str:
+    host = _host_target()
+    if host.startswith("linux-"):
+        return "darwin-arm64" if host != "darwin-arm64" else "darwin-x64"
+    return "linux-x64" if host != "linux-x64" else "linux-arm64"
+
+
+def test_mismatched_target_is_refused_before_extraction(tmp_path):
+    archive, manifest = make_transfer(tmp_path, target=_wrong_target())
+    dest = tmp_path / "install"
+
+    result = run_installer("--archive", str(archive), "--manifest", str(manifest),
+                           "--dest", str(dest), "--bin-dir", str(tmp_path / "bin"), "--no-shell")
+
+    assert result.returncode != 0, result.stdout
+    assert "does not match this host" in result.stdout + result.stderr
+    assert not (dest / "payload").exists()
+
+
+def test_no_target_check_allows_mismatched_target(tmp_path):
+    archive, manifest = make_transfer(tmp_path, target=_wrong_target())
+    dest = tmp_path / "install"
+
+    result = run_installer("--archive", str(archive), "--manifest", str(manifest),
+                           "--dest", str(dest), "--bin-dir", str(tmp_path / "bin"),
+                           "--no-shell", "--no-target-check")
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (dest / "payload" / "manifest.json").is_file()

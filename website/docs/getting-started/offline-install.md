@@ -95,12 +95,15 @@ The installer:
 
 1. verifies the archive SHA-256 against the manifest **before extracting
    anything** — a corrupt or substituted transfer writes nothing;
-2. unpacks the payload to `~/.hermes/payload`, moving any previous payload
+2. verifies the payload target matches the host architecture (`linux-x64`,
+   `linux-arm64`, `darwin-arm64`, etc.) before extracting, preventing an
+   incompatible architecture from mutating `~/.hermes/payload`;
+3. unpacks the payload to `~/.hermes/payload`, moving any previous payload
    aside rather than deleting it, so a failed upgrade leaves the old install
    runnable;
-3. symlinks `hermes`, `hermes-agent` and `hermes-acp` into `~/.local/bin`,
+4. symlinks `hermes`, `hermes-agent` and `hermes-acp` into `~/.local/bin`,
    leaving any launcher it does not own untouched; and
-4. runs `hermes --version` from the installed payload to prove it executes.
+5. runs `hermes --version` from the installed payload to prove it executes.
 
 Then:
 
@@ -115,7 +118,8 @@ hermes --version
 | --- | --- |
 | `--dest DIR` | Unpack somewhere other than `~/.hermes` (also `HERMES_INSTALL_DIR`). |
 | `--bin-dir DIR` | Link launchers somewhere other than `~/.local/bin` (also `HERMES_BIN_DIR`). |
-| `--no-verify` | Skip digest verification. **Not recommended** — this is the only check that the transfer is intact. |
+| `--no-verify` | Skip digest and target verification. **Not recommended** — disables transfer checks. |
+| `--no-target-check` | Skip target architecture check (e.g. for staging an archive for another machine). |
 | `--no-shell` | Do not modify shell rc files. |
 | `--dry-run` | Report what would happen and change nothing. |
 
@@ -137,6 +141,22 @@ connected machine, pack it, and run the installer again on the target. The
 previous payload is moved to `~/.hermes/payload.previous-<timestamp>` rather
 than deleted, so you can roll back by swapping the directories back.
 
+## Runtime notes for air-gapped deployments
+
+This offline package handoff solves the **installation and dependency closure**
+without network access.
+
+At runtime, Hermes may perform cold-start network checks (such as fetching
+model provider metadata from `models.dev` or checking for upstream git updates in
+the startup banner). On networks where egress is blocked or blackholed, these
+can cause timeouts on initial boot:
+
+- If PR #75925 (`agent.offline: true` in `config.yaml`) is available, set
+  `agent.offline: true` to suppress these cold fetches entirely.
+- In environments without that configuration switch, you can map `models.dev`
+  to `127.0.0.1` in `/etc/hosts` to fail fast instead of hanging on timeouts,
+  or pre-populate the model cache in `~/.hermes/cache`.
+
 ## Troubleshooting
 
 **`archive digest mismatch`** — the archive does not match the manifest. The
@@ -146,12 +166,16 @@ the same `pack.py` run.
 **`no manifest found next to the archive`** — the `.manifest.json` was not
 copied. Transfer it alongside the archive.
 
+**`payload target '...' does not match this host '...'`** — the payload was built
+for a different architecture (e.g. `linux-arm64` on a `linux-x64` machine). Transfer
+a payload matching the host's `uname -s`/`uname -m`, or pass `--no-target-check`
+if you are intentionally staging an archive for another machine.
+
 **The launchers are not on `PATH`** — open a new shell, or run
 `export PATH="$HOME/.local/bin:$PATH"`. If an existing `hermes` from pipx or
 another checkout is present, the installer deliberately leaves it alone; point
 your shell at `~/.local/bin` first, or use `--bin-dir` to install elsewhere.
 
-**`hermes --version` fails right after install** — the payload target probably
-does not match the machine. Compare the `target` field in the manifest with the
-output of `uname -sm` (Linux/macOS) and rebuild the payload on a matching
-machine.
+**`hermes --version` fails right after install** — the payload files or binaries
+may be damaged or dynamic linker dependencies (e.g. glibc/musl) may differ.
+Run with `HERMES_DEBUG=1` or check that system libc matches the build target.
