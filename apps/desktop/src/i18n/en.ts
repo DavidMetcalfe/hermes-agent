@@ -16,6 +16,7 @@ import { enNotices } from './en_notices'
 import { enOnboarding } from './en_onboarding'
 import { enProjects } from './en_projects'
 import { enSharedMetrics } from './en_shared_metrics'
+import { enStatusbarReadouts } from './en_statusbar_readouts'
 import { enThemePicker } from './en_theme_picker'
 import { enUninstallSection } from './en_uninstall_section'
 import { enUpdateChannel } from './en_update_channel'
@@ -4121,7 +4122,7 @@ export const en: Translations = {
       off: 'Off',
       offDescription: 'Run without approval prompts'
     },
-    statusbar: {
+    statusbar: { ...enStatusbarReadouts,
       unknown: 'unknown',
       restart: 'restart',
       update: 'update',
@@ -4161,18 +4162,14 @@ export const en: Translations = {
       resetStatusbar: 'Reset to defaults',
       toggleApprovalMode: 'Approvals',
       toggleBackendVersion: 'Backend version',
-      toggleCacheHitRate: 'Cache hit rate',
       toggleCommandCenter: 'Command Center',
       toggleContextUsage: 'Context meter',
       toggleRunningTimer: 'Turn timer',
       toggleSessionTimer: 'Session timer',
       toggleTerminal: 'Terminal',
-      toggleTokensPerSecond: 'Tokens per second',
       toggleVersion: 'Version & updates',
       toggleFreeTier: 'Free tier',
       toggleWorkspace: 'Workspace',
-      cacheHitRateTitle: 'Prompt cache hit rate this session — cached tokens cost less, so higher is cheaper',
-      tokensPerSecondTitle: 'Output tokens per second, averaged over the last 10 model calls',
       agents: 'Agents',
       closeAgents: 'Close agents',
       openAgents: 'Open agents',
