@@ -143,7 +143,7 @@ _INCLUDED_ENTRY = PricingEntry(
 # Official rate card: https://api-docs.deepseek.com/quick_start/pricing
 # DeepSeek switches from the flat 2026-07 card to peak/off-peak billing at
 # this instant. Until then the legacy flat card below is what DeepSeek bills.
-_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC = datetime(2026, 8, 16, 16, 0, tzinfo=timezone.utc)
+_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC = datetime(2026, 8, 16, 16, 0, tzinfo=UTC)
 
 # Peak windows are 01:00–04:00 and 06:00–10:00 UTC (all other hours are
 # off-peak), Monday through Friday. Read as half-open intervals:
@@ -161,7 +161,7 @@ _DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
 # ("effective from 12:00 Beijing Time on September 10, 2026").  Beijing is
 # UTC+8, so the instant is 04:00 UTC.  Hour 4 is off-peak, so the card change
 # and the peak window boundary do not interact.
-_DEEPSEEK_V41_CARD_EFFECTIVE_UTC = datetime(2026, 9, 10, 4, 0, tzinfo=timezone.utc)
+_DEEPSEEK_V41_CARD_EFFECTIVE_UTC = datetime(2026, 9, 10, 4, 0, tzinfo=UTC)
 
 # Cards DeepSeek billed before the live snapshot: the flat card until
 # 2026-08-16T16:00Z, then the 2026-08-16 peak/off-peak card until the
@@ -185,7 +185,7 @@ _DEEPSEEK_LEGACY_PRO_ENTRY = PricingEntry(
     source_url="https://api-docs.deepseek.com/quick_start/pricing",
     pricing_version="deepseek-pricing-2026-07",
 )
-_DEEPSEEK_LEGACY_FLAT_RATES: Dict[str, PricingEntry] = {
+_DEEPSEEK_LEGACY_FLAT_RATES: dict[str, PricingEntry] = {
     "deepseek-chat": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-reasoner": _DEEPSEEK_LEGACY_FLASH_ENTRY,
     "deepseek-v4-flash": _DEEPSEEK_LEGACY_FLASH_ENTRY,
@@ -212,7 +212,7 @@ _DEEPSEEK_2026_08_16_PRO_ENTRY = PricingEntry(
     source_url="https://api-docs.deepseek.com/quick_start/pricing",
     pricing_version="deepseek-pricing-2026-08-16",
 )
-_DEEPSEEK_2026_08_16_RATES: Dict[str, PricingEntry] = {
+_DEEPSEEK_2026_08_16_RATES: dict[str, PricingEntry] = {
     "deepseek-chat": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
     "deepseek-reasoner": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
     "deepseek-v4-flash": _DEEPSEEK_2026_08_16_FLASH_ENTRY,
@@ -221,7 +221,7 @@ _DEEPSEEK_2026_08_16_RATES: Dict[str, PricingEntry] = {
 }
 # (billed from, billed until, per-model entries), oldest first.  The live
 # snapshot is the card in force once no row matches.
-_DEEPSEEK_HISTORICAL_CARDS: tuple[tuple[Optional[datetime], datetime, Dict[str, PricingEntry]], ...] = (
+_DEEPSEEK_HISTORICAL_CARDS: tuple[tuple[Optional[datetime], datetime, dict[str, PricingEntry]], ...] = (
     (None, _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC, _DEEPSEEK_LEGACY_FLAT_RATES),
     (_DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC, _DEEPSEEK_V41_CARD_EFFECTIVE_UTC, _DEEPSEEK_2026_08_16_RATES),
 )
@@ -803,7 +803,7 @@ def estimate_usage_cost(
     if billing_time is not None:
         if billing_time.tzinfo is None:
             raise ValueError("billing_time must be timezone-aware")
-        billing_time = billing_time.astimezone(timezone.utc)
+        billing_time = billing_time.astimezone(UTC)
 
     from providers import get_provider_profile
     profile = get_provider_profile(provider or '')
@@ -885,7 +885,7 @@ def estimate_usage_cost(
     # item (cache-hit input, cache-miss input, output). DeepSeek has no
     # per-request fee today; if one appears, this scaling must be revisited.
     if deepseek_peak_hour:
-        amount *= Decimal("2")
+        amount *= Decimal(2)
 
     status: CostStatus = "estimated"
     label = format_cost_label(amount)

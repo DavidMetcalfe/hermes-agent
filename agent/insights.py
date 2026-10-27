@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 from collections import Counter, defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -40,7 +40,7 @@ def _estimate_cost(session_or_model: dict[str, Any] | str, input_tokens: int = 0
         # ran, not when the report is generated — DeepSeek's rates depend
         # on the request time (#85388 review).
         if billing_time is None and s.get("started_at") is not None:
-            billing_time = datetime.fromtimestamp(s["started_at"], tz=timezone.utc)
+            billing_time = datetime.fromtimestamp(s["started_at"], tz=UTC)
     else:
         model = session_or_model or ""
         usage = CanonicalUsage(input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
@@ -368,7 +368,7 @@ class InsightsEngine:
             if stored_cost is None:
                 estimate, status = _estimate_cost(model, counts["input_tokens"], counts["output_tokens"], cache_read_tokens=counts["cache_read_tokens"],
                                                   cache_write_tokens=counts["cache_write_tokens"], provider=provider or None, base_url=base_url,
-                                                  billing_time=(datetime.fromtimestamp(started_at, tz=timezone.utc)
+                                                  billing_time=(datetime.fromtimestamp(started_at, tz=UTC)
                                                                 if started_at is not None else None))
             else:
                 estimate, status = float(stored_cost or 0.0), cost_status or "unknown"

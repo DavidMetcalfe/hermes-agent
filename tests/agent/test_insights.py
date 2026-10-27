@@ -2,7 +2,7 @@
 
 import time
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, UTC
 
 from hermes_state import SessionDB
 from agent.insights import (
@@ -14,7 +14,7 @@ from agent.usage_pricing import (
     format_duration_compact as _format_duration,
     has_known_pricing as _has_known_pricing,
 )
-import agent.usage_pricing as usage_pricing
+from agent import usage_pricing
 
 @pytest.fixture()
 def db(tmp_path):
@@ -161,19 +161,19 @@ class TestEstimateCost:
             "input_tokens": 1_000_000,
             "output_tokens": 1_000_000,
             "billing_provider": "deepseek",
-            "started_at": datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc).timestamp(),
+            "started_at": datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp(),
         }
         monkeypatch.setattr(
             usage_pricing,
             "_UTC_NOW",
-            lambda: datetime(2026, 9, 14, 2, 0, tzinfo=timezone.utc),
+            lambda: datetime(2026, 9, 14, 2, 0, tzinfo=UTC),
         )
         cost, status = _estimate_cost(session)
         assert status == "estimated"
         assert cost == pytest.approx(0.42, abs=0.0001)  # legacy flat card
         # Post-switchover session in a peak hour → 2x off-peak.
         session["started_at"] = datetime(
-            2026, 9, 14, 2, 0, tzinfo=timezone.utc
+            2026, 9, 14, 2, 0, tzinfo=UTC
         ).timestamp()
         cost, status = _estimate_cost(session)
         assert cost == pytest.approx(1.50, abs=0.0001)
@@ -236,7 +236,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
         estimation loop is the path under test (generate() overrides the
         overview total with the model-breakdown sum when models are given)."""
         started_at = self._seed_deepseek_session(
-            db, datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc).timestamp()
+            db, datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp()
         )
         engine = InsightsEngine(db)
         # Window derived from the seeded instant, not from "now": the fixture
@@ -251,7 +251,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
                 usage_pricing,
                 "_UTC_NOW",
                 lambda: datetime(
-                    2026, 8, 17, report_hour, 0, tzinfo=timezone.utc
+                    2026, 8, 17, report_hour, 0, tzinfo=UTC
                 ),
             )
             overview = engine._compute_overview(sessions, message_stats, None)
@@ -265,7 +265,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
         update_token_counts already writes the usage row, so no explicit
         insert is needed."""
         started_at = self._seed_deepseek_session(
-            db, datetime(2026, 8, 10, 2, 0, tzinfo=timezone.utc).timestamp()
+            db, datetime(2026, 8, 10, 2, 0, tzinfo=UTC).timestamp()
         )
         rows = db._conn.execute(
             "SELECT session_id FROM session_model_usage WHERE session_id = 'ds1'"
@@ -280,7 +280,7 @@ class TestDeepSeekPeakBillingTimeInvariance:
                 usage_pricing,
                 "_UTC_NOW",
                 lambda: datetime(
-                    2026, 8, 17, report_hour, 0, tzinfo=timezone.utc
+                    2026, 8, 17, report_hour, 0, tzinfo=UTC
                 ),
             )
             report = InsightsEngine(db).generate(days=days)
