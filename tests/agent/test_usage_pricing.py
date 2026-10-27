@@ -97,6 +97,8 @@ def test_normalize_usage_reads_deepseek_native_cache_hit_tokens():
     assert normalized.output_tokens == 400
 
 
+
+
 def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     """Some OpenAI-compatible proxies (OpenRouter, Vercel AI Gateway, Cline) expose
     Anthropic-style cache token counts at the top level of the usage object when
@@ -124,6 +126,22 @@ def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
     # input_tokens = prompt_total - cache_read - cache_write = 1000 - 500 - 300 = 200
     assert normalized.input_tokens == 200
     assert normalized.output_tokens == 200
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def test_bundled_pricing_skips_endpoint_metadata(monkeypatch):
@@ -166,6 +184,8 @@ def test_unknown_model_falls_back_to_endpoint_metadata(monkeypatch):
     assert entry.source == "provider_models_api"
     assert entry.input_cost_per_million == Decimal(1)
     assert entry.output_cost_per_million == Decimal(2)
+
+
 
 
 def test_deepseek_deprecated_aliases_price_as_flash():
@@ -599,6 +619,10 @@ def test_bedrock_claude_rows_all_carry_cache_pricing():
         assert entry.cache_write_cost_per_million > entry.input_cost_per_million, key
 
 
+
+
+
+
 def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
     """Bedrock profile IDs may include the provider's dated version suffix.
 
@@ -618,6 +642,10 @@ def test_bedrock_versioned_inference_profile_resolves_to_bare_pricing():
         assert scoped.output_cost_per_million == bare.output_cost_per_million
         assert scoped.cache_read_cost_per_million == bare.cache_read_cost_per_million
         assert scoped.cache_write_cost_per_million == bare.cache_write_cost_per_million
+
+
+
+
 
 
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():
@@ -691,6 +719,16 @@ def test_fireworks_router_fast_tier_prices_distinctly():
     assert fast.output_cost_per_million > standard.output_cost_per_million
 
 
+
+
+
+
+
+
+
+
+
+
 def test_google_and_vertex_routes_share_official_pricing_snapshot():
     """Direct Gemini, Vertex, and Vertex's OpenAI-compatible hostname must
     all normalize to the Google official-pricing route.
@@ -760,6 +798,10 @@ def test_curated_google_flash_models_resolve_official_snapshot_pricing(monkeypat
         assert model in _PROVIDER_MODELS["vertex"], model
 
 
+
+
+
+
 # ---------------------------------------------------------------------------
 # Cost label formatting (#79220: sub-cent costs render as $0.00)
 # ---------------------------------------------------------------------------
@@ -786,6 +828,7 @@ class TestFormatCostLabel:
         assert format_cost_label(Decimal("1.23")) == "~$1.23"
 
 
+
     def test_below_4dp_floor_never_reads_zero(self):
         """Amounts below $0.00005 must not render as '~$0.0000' (#79220).
 
@@ -797,6 +840,7 @@ class TestFormatCostLabel:
         # Exact boundary: $0.00005 rounds to 0.0000 under ROUND_HALF_EVEN
         # and must also take the fallback.
         assert format_cost_label(Decimal("0.00005")) == "~$<0.0001"
+
 
 
 # ---------------------------------------------------------------------------
