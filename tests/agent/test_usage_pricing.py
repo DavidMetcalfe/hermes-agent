@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone, UTC
+from datetime import date, datetime, timedelta, timezone, UTC
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -242,6 +242,87 @@ def test_deepseek_peak_hours_off_on_weekends(monkeypatch):
             result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
             assert result.amount_usd == off_peak, f"{weekday_name} hour {hour}"
             assert not any("peak" in note for note in result.notes), f"{weekday_name} hour {hour}"
+
+
+def test_deepseek_chinese_holidays_are_off_peak(monkeypatch):
+    """Chinese public holidays are off-peak in full, so a weekday holiday inside
+    a peak window bills 1x rather than 2x — the rule DeepSeek states alongside
+    the peak windows ("excluding Chinese public holidays ... including Chinese
+    public holidays in full").
+
+    Vectors from 国务院办公厅关于2026年部分节假日安排的通知 (国办发明电〔2025〕7号).
+    """
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    off_peak = Decimal("0.75")  # flash: $0.15 in + $0.60 out per 1M
+    peak = off_peak * 2
+    # (date, label) — weekday holidays that overlap a peak window.
+    for stamp, label in [
+        (date(2026, 10, 1), "National Day Thu"),
+        (date(2026, 10, 2), "National Day Fri"),
+        (date(2026, 10, 5), "National Day Mon"),
+        (date(2026, 10, 6), "National Day Tue"),
+        (date(2026, 10, 7), "National Day Wed"),
+        (date(2026, 9, 25), "Mid-Autumn Fri"),
+    ]:
+        for hour in (2, 7):  # one hour from each peak window
+            now = datetime(stamp.year, stamp.month, stamp.day, hour, 30, tzinfo=UTC)
+            monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
+            result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
+            assert result.amount_usd == off_peak, f"{label} hour {hour}"
+            assert not any("peak" in note for note in result.notes), f"{label} hour {hour}"
+
+    # The same weekday/hour one day either side of the National Day block is peak.
+    for stamp in (date(2026, 9, 30), date(2026, 10, 8)):
+        now = datetime(stamp.year, stamp.month, stamp.day, 2, 30, tzinfo=UTC)
+        monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
+        result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
+        assert result.amount_usd == peak, stamp
+        assert any("peak" in note for note in result.notes), stamp
+
+
+def test_deepseek_makeup_work_weekends_stay_off_peak(monkeypatch):
+    """调休 makeup-work days move a weekend into the work week (2026-09-20 Sun,
+    2026-10-10 Sat), but DeepSeek bills weekends off-peak regardless — so these
+    must NOT become peak just because the State Council calls them work days.
+    They carry no holiday-set entry; the weekday gate alone keeps them 1x."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    off_peak = Decimal("0.75")
+    for stamp in (date(2026, 9, 20), date(2026, 10, 10)):
+        assert stamp not in usage_pricing._DEEPSEEK_CN_HOLIDAYS_2026, stamp
+        for hour in (2, 7):
+            now = datetime(stamp.year, stamp.month, stamp.day, hour, 30, tzinfo=UTC)
+            monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
+            result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
+            assert result.amount_usd == off_peak, f"{stamp} hour {hour}"
+            assert not any("peak" in note for note in result.notes), f"{stamp} hour {hour}"
+
+
+def test_deepseek_holiday_calendar_covers_only_published_years(monkeypatch):
+    """The table is a dated external fact: a date past its last row bills by the
+    weekday gate alone, exactly as the dated rate cards fall back to the live
+    snapshot.  A model that starts guessing holidays stops being an estimator."""
+    usage = CanonicalUsage(input_tokens=1_000_000, output_tokens=1_000_000)
+    # 2027-01-04 is a Monday with no calendar row; New Year 2027 has no entry.
+    now = datetime(2027, 1, 4, 2, 30, tzinfo=UTC)
+    monkeypatch.setattr(usage_pricing, "_UTC_NOW", lambda: now)
+    result = estimate_usage_cost("deepseek-v4-flash", usage, provider="deepseek")
+    assert result.amount_usd == Decimal("1.50")
+    assert any("peak" in note for note in result.notes)
+    # Dates before the first row have no holiday set at all.
+    assert usage_pricing._deepseek_holiday_set(datetime(2025, 12, 31, tzinfo=UTC)) == frozenset()
+
+
+def test_deepseek_holiday_set_matches_the_state_council_calendar():
+    """Guard the table itself: every entry is a 2026 weekday, and the known
+    weekday holiday count is 19 (33 holiday days minus the weekend ones)."""
+    holidays = usage_pricing._DEEPSEEK_CN_HOLIDAYS_2026
+    assert all(isinstance(d, date) and d.year == 2026 for d in holidays)
+    assert all(d.isoweekday() <= 5 for d in holidays), "weekend dates are unreachable"
+    assert len(holidays) == 19
+    # No makeup-work weekend may appear here.
+    for makeup in (date(2026, 1, 4), date(2026, 2, 14), date(2026, 2, 28),
+                   date(2026, 5, 9), date(2026, 9, 20), date(2026, 10, 10)):
+        assert makeup not in holidays, makeup
 
 
 def test_deepseek_peak_window_edges_cross_midnight(monkeypatch):

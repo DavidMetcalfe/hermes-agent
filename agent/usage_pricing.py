@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, fields, replace
-from datetime import datetime, timezone, UTC
+from datetime import date, datetime, timezone, UTC
 from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
@@ -156,6 +156,37 @@ _DEEPSEEK_PEAK_DAYS = frozenset({1, 2, 3, 4, 5})
 # dates agree (Beijing is UTC+8; the dates disagree only at 16:00–24:00
 # UTC).  If DeepSeek ever moves a peak hour to 16:00+ UTC, the weekday
 # must be read in Asia/Shanghai instead.
+#
+# Chinese public holidays are off-peak in full, whatever the weekday
+# (https://api-docs.deepseek.com/quick_start/pricing — "excluding Chinese
+# public holidays ... including weekends and Chinese public holidays in
+# full").  Makeup work days (调休) move a weekend into the work week, but
+# DeepSeek bills weekends off-peak regardless, and every 调休 day in the
+# State Council calendar is a Saturday or Sunday — so the weekday gate
+# already prices them correctly and they need no entry here.  The set omits
+# weekend holiday days too: they are unreachable, the gate rejects them
+# first.
+#
+# Only weekday dates can shift a bill — 19 of the 33 holiday days in 2026.
+# The whole published list is carried so the table stays a faithful
+# transcription of the State Council notice; which of those dates can reach
+# the peak tier at all is the switchover gate above, not this set.
+_DEEPSEEK_CN_HOLIDAYS_2026 = frozenset({
+    date(2026, 1, 1), date(2026, 1, 2),                                    # New Year
+    *(date(2026, 2, day) for day in range(16, 21)), date(2026, 2, 23),      # Spring Festival
+    date(2026, 4, 6),                                                      # Qingming
+    date(2026, 5, 1), date(2026, 5, 4), date(2026, 5, 5),                  # Labour Day
+    date(2026, 6, 19),                                                     # Dragon Boat
+    date(2026, 9, 25),                                                     # Mid-Autumn
+    *(date(2026, 10, day) for day in (1, 2, 5, 6, 7)),                     # National Day
+})
+# (billed from, holiday dates).  A date past every row bills normally: the
+# table is a dated external fact like the rate cards above, so a newer sheet
+# replaces the row instead of the lookup guessing.  Keyed by Beijing date —
+# the same window that leaves the UTC hour read safe (see above).
+_DEEPSEEK_HOLIDAY_CALENDARS: tuple[tuple[datetime, frozenset[date]], ...] = (
+    (datetime(2026, 1, 1, tzinfo=UTC), _DEEPSEEK_CN_HOLIDAYS_2026),
+)
 
 # 12:00 Beijing on 2026-09-10 — DeepSeek's Flash re-pricing announcement
 # ("effective from 12:00 Beijing Time on September 10, 2026").  Beijing is
@@ -236,14 +267,24 @@ def _deepseek_card_entry(model: str, now: datetime) -> Optional[PricingEntry]:
     return None
 
 
+def _deepseek_holiday_set(now: datetime) -> frozenset[date]:
+    """The Chinese holiday calendar in force at ``now`` (empty before 2026)."""
+    for start, holidays in reversed(_DEEPSEEK_HOLIDAY_CALENDARS):
+        if now >= start:
+            return holidays
+    return frozenset()
+
+
 def _deepseek_card_and_peak(model: str, now: datetime) -> tuple[Optional[PricingEntry], bool]:
     """The dated card billing ``model`` at ``now`` (``None`` = live snapshot), and
     whether that instant falls in a peak window: from the 2026-08-16T16:00Z
-    switchover, 01:00-04:00 and 06:00-10:00 UTC on Mon-Fri."""
+    switchover, 01:00-04:00 and 06:00-10:00 UTC on Mon-Fri, excluding Chinese
+    public holidays (off-peak in full)."""
     peak = (
         now >= _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC
         and now.isoweekday() in _DEEPSEEK_PEAK_DAYS
         and now.hour in _DEEPSEEK_PEAK_HOURS
+        and now.date() not in _deepseek_holiday_set(now)
     )
     return _deepseek_card_entry(model.lower(), now), peak
 
