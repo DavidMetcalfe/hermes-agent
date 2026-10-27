@@ -236,6 +236,18 @@ def _deepseek_card_entry(model: str, now: datetime) -> Optional[PricingEntry]:
     return None
 
 
+def _deepseek_card_and_peak(model: str, now: datetime) -> tuple[Optional[PricingEntry], bool]:
+    """The dated card billing ``model`` at ``now`` (``None`` = live snapshot), and
+    whether that instant falls in a peak window: from the 2026-08-16T16:00Z
+    switchover, 01:00-04:00 and 06:00-10:00 UTC on Mon-Fri."""
+    peak = (
+        now >= _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC
+        and now.isoweekday() in _DEEPSEEK_PEAK_DAYS
+        and now.hour in _DEEPSEEK_PEAK_HOURS
+    )
+    return _deepseek_card_entry(model.lower(), now), peak
+
+
 def _snap(
     inp: str, out: str, cache_read: Optional[str] = None, cache_write: Optional[str] = None, *,
     version: str, url: Optional[str] = None, **tiers: Any,
@@ -779,6 +791,18 @@ def _unknown_cost(source: CostSource, *notes: str) -> CostResult:
     return CostResult(amount_usd=None, status="unknown", source=source, label="n/a", notes=notes)
 
 
+def _route_notes(provider: str, deepseek_peak_hour: bool) -> list[str]:
+    """Route/time-of-day caveats that ride along with an estimate."""
+    notes: list[str] = []
+    if provider == "openrouter":
+        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
+    if deepseek_peak_hour:
+        notes.append(
+            "DeepSeek peak-hour rate applied (2x off-peak; peak 01:00-04:00 / 06:00-10:00 UTC, Mon-Fri)."
+        )
+    return notes
+
+
 def estimate_usage_cost(
     model_name: str, usage: CanonicalUsage, *, provider: Optional[str] = None,
     base_url: Optional[str] = None, api_key: Optional[str] = None,
@@ -843,18 +867,12 @@ def estimate_usage_cost(
     deepseek_peak_hour = False
     if route.provider == "deepseek":
         now = billing_time if billing_time is not None else _UTC_NOW()
-        dated = _deepseek_card_entry(route.model.lower(), now)
+        dated, deepseek_peak_hour = _deepseek_card_and_peak(route.model, now)
         if dated is not None:
             # A model the snapshot has but the dated card does not falls back
             # to the snapshot rates — add it to the dated card when DeepSeek
             # bills it under that card.
             entry = dated
-        if (
-            now >= _DEEPSEEK_PEAK_BILLING_EFFECTIVE_UTC
-            and now.isoweekday() in _DEEPSEEK_PEAK_DAYS
-            and now.hour in _DEEPSEEK_PEAK_HOURS
-        ):
-            deepseek_peak_hour = True
 
     # Whole-request context tier (e.g. Gemini Pro >200k prompts): above the
     # threshold the *_above rates apply to the entire request; None falls back.
@@ -894,12 +912,7 @@ def estimate_usage_cost(
         label = "included"
         notes.append(_INCLUDED_NOTE)
 
-    if route.provider == "openrouter":
-        notes.append("OpenRouter cost is estimated from the models API until reconciled.")
-    if deepseek_peak_hour:
-        notes.append(
-            "DeepSeek peak-hour rate applied (2x off-peak; peak 01:00-04:00 / 06:00-10:00 UTC, Mon-Fri)."
-        )
+    notes.extend(_route_notes(route.provider, deepseek_peak_hour))
 
     return CostResult(
         amount_usd=amount, status=status, source=entry.source, label=label,
