@@ -262,6 +262,51 @@ class TestStreamingCallbacks:
 
         assert deltas == ["a", "b", "c"]
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_pending_sse_text_flushes_before_tool_boundary(
+        self,
+        mock_close,
+        mock_create,
+    ):
+        """A buffered SSE-looking text delta is emitted before tool generation."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="data: {"),
+            _make_stream_chunk(
+                tool_calls=[
+                    _make_tool_call_delta(
+                        index=0,
+                        tc_id="call_123",
+                        name="terminal",
+                        arguments='{"command":"pwd"}',
+                    )
+                ]
+            ),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        events = []
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=lambda text: events.append(("text", text)),
+            tool_gen_callback=lambda name: events.append(("tool", name)),
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert events == [("text", "data: {"), ("tool", "terminal")]
+
 
 
 

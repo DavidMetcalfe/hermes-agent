@@ -17,7 +17,8 @@ fake chunk streams and assert that:
   while explicit config wins over the floor,
 * a reasoning-only kill is NOT retried (byte-identical retries would be
   killed again),
-* reasoning-then-content and content-only streams are never killed.
+* reasoning-then-content, reasoning-then-tool, and content-only streams
+  are never killed.
 
 The kill is observed through the same seam a user would see: the poll
 loop aborts the request client with reason ``reasoning_only_stale_kill``
@@ -94,6 +95,26 @@ def _content_chunk(text: str = "hello") -> SimpleNamespace:
                 reasoning_content=None,
                 content=text,
                 tool_calls=None,
+            ),
+            finish_reason=None,
+        )],
+        model="deepseek/deepseek-v4-flash",
+        usage=None,
+    )
+
+
+def _tool_chunk() -> SimpleNamespace:
+    """One tool-call delta: externally visible progress, not reasoning."""
+    return SimpleNamespace(
+        choices=[SimpleNamespace(
+            delta=SimpleNamespace(
+                reasoning_content=None,
+                content=None,
+                tool_calls=[SimpleNamespace(
+                    index=0,
+                    id="call_1",
+                    function=SimpleNamespace(name="terminal", arguments=None),
+                )],
             ),
             finish_reason=None,
         )],
@@ -354,6 +375,38 @@ class TestReasoningOnlyStaleKill:
 
 
 class TestNoFalsePositive:
+    def test_tool_call_deltas_reset_reasoning_only_window(self, tmp_path, monkeypatch):
+        """A tool call after reasoning is visible progress and keeps the stream alive."""
+        from agent import chat_completion_helpers as h
+
+        agent = _make_agent(tmp_path, monkeypatch, reasoning_timeout=0.1)
+        abort_flag = {"aborted": False}
+        stop_event = threading.Event()
+        state = {"sent_reasoning": False}
+
+        def _chunk_factory():
+            if not state["sent_reasoning"]:
+                state["sent_reasoning"] = True
+                return _reasoning_chunk()
+            return _tool_chunk()
+
+        aborts, _, _ = _wire_fake_client(
+            agent, monkeypatch, _chunk_factory, abort_flag, stop_event
+        )
+
+        thread = threading.Thread(
+            target=lambda: h.interruptible_streaming_api_call(agent, _call_kwargs()),
+            daemon=True,
+        )
+        thread.start()
+        time.sleep(0.8)  # several reasoning-only windows, with tool progress throughout
+        assert "reasoning_only_stale_kill" not in aborts, (
+            f"tool-call deltas must reset the reasoning-only window, aborts={aborts}"
+        )
+        stop_event.set()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "call should complete after the stream ends"
+
     def test_reasoning_then_content_is_not_killed(self, tmp_path, monkeypatch):
         """A stream that reasons briefly then produces content is left alone."""
         from agent import chat_completion_helpers as h
